@@ -527,6 +527,11 @@ namespace SignalForward
                     }
                 };
                 _remoteUdp.Start();
+
+                var re = new byte[128];
+                re[1] = 1;
+                re[2] = 3;
+                _remoteUdp?.Send(_plcIpEndPoint, re);
             }
             catch (Exception exception)
             {
