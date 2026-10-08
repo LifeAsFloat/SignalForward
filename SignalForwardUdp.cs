@@ -1,4 +1,4 @@
-﻿using SignalForward.UDP;
+using SignalForward.UDP;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Reflection;
@@ -1562,6 +1562,8 @@ namespace SignalForward
                             var destination1 = value.Bytes1.Skip(34).Take(44 - 34).ToArray();
                             timeOut = 0;
                             beforeDt = DateTime.Now;
+                            var isSenndTakePhoto1 = false;
+                            var isSenndResult1 = true;
 
                             while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
                             {
@@ -1610,6 +1612,7 @@ namespace SignalForward
                                     //Logger?.Info(re);
                                     //Logger?.Info("----------------------------------------------------");
                                     photoCompleted = false;
+                                    isSenndTakePhoto1 = true;
                                     // Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
                                     Aoi1Message.TryRemove(b.Key, out _);
                                 }
@@ -1640,6 +1643,7 @@ namespace SignalForward
                                     //Logger?.Info(re);
                                     //Logger?.Info("----------------------------------------------------");
                                     complete = false;
+                                    isSenndResult1 = false;
                                     //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
                                     Aoi1Message.TryRemove(c.Key, out _);
                                 }
@@ -1649,6 +1653,18 @@ namespace SignalForward
                                 var ts = afterDt.Subtract(beforeDt);
                                 timeOut = ts.Ticks / 10000;
                             }
+                            if (isSenndTakePhoto1 && isSenndResult1)
+                            {
+                                var re = new byte[value.BytesOriginal.Length];
+                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                re[1] = 1;
+                                re[2] = 2;
+                                re[3] = 0;
+                                re[9] = WaiGuan;
+                                re[10] = Color;
+                                _remoteUdp?.Send(_plcIpEndPoint, re);
+                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
+                            }
                             //RemoveQueue.Enqueue(value);
                             break;
 
@@ -1656,6 +1672,8 @@ namespace SignalForward
                             var destination2 = value.Bytes2.Skip(34).Take(44 - 34).ToArray();
                             timeOut = 0;
                             beforeDt = DateTime.Now;
+                            var isSenndTakePhoto2 = false;
+                            var isSenndResult2 = true;
                             while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
                             {
                                 //拍照中
@@ -1702,6 +1720,7 @@ namespace SignalForward
                                     //Logger?.Info(re);
                                     //Logger?.Info("----------------------------------------------------");
                                     photoCompleted = false;
+                                    isSenndTakePhoto2 = true;
                                     //Aoi2Message.RemoveAll(item => item.SequenceEqual(b));
                                     Aoi2Message.TryRemove(b.Key, out _);
                                 }
@@ -1732,6 +1751,7 @@ namespace SignalForward
                                     //Logger?.Info(re); 
                                     //Logger?.Info("----------------------------------------------------");
                                     complete = false;
+                                    isSenndResult2 = false;
                                     //Aoi2Message.RemoveAll(item => item.SequenceEqual(c));
                                     Aoi2Message.TryRemove(c.Key, out _);
                                 }
@@ -1740,6 +1760,18 @@ namespace SignalForward
                                 var afterDt = DateTime.Now;
                                 var ts = afterDt.Subtract(beforeDt);
                                 timeOut = ts.Ticks / 10000;
+                            }
+                            if (isSenndTakePhoto2 && isSenndResult2)
+                            {
+                                var re = new byte[value.BytesOriginal.Length];
+                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                re[1] = 1;
+                                re[2] = 2;
+                                re[3] = 0;
+                                re[11] = WaiGuan;
+                                re[12] = Color;
+                                _remoteUdp?.Send(_plcIpEndPoint, re);
+                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
@@ -2086,6 +2118,8 @@ namespace SignalForward
                             var destination1 = value.Bytes1.Skip(34).Take(44 - 34).ToArray();
                             timeOut = 0;
                             beforeDt = DateTime.Now;
+                            var isSenndTakePhotoCb1 = false;
+                            var isSenndResultCb1 = true;
                             while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
                             {
                                 //拍照中
@@ -2134,6 +2168,7 @@ namespace SignalForward
                                     Logger?.Info(re);
                                     Logger?.Info("----------------------------------------------------");
                                     photoCompleted = false;
+                                    isSenndTakePhotoCb1 = true;
                                     //Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
                                     Aoi1Message.TryRemove(b.Key, out _);
                                 }
@@ -2177,6 +2212,7 @@ namespace SignalForward
                                     Logger?.Info(re);
                                     Logger?.Info("----------------------------------------------------");
                                     complete = false;
+                                    isSenndResultCb1 = false;
                                     //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
                                     Aoi1Message.TryRemove(c.Key, out _);
                                 }
@@ -2186,6 +2222,18 @@ namespace SignalForward
                                 var ts = afterDt.Subtract(beforeDt);
                                 timeOut = ts.Ticks / 10000;
                             }
+                            if (isSenndTakePhotoCb1 && isSenndResultCb1)
+                            {
+                                var re = new byte[value.BytesOriginal.Length];
+                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                re[1] = 1;
+                                re[2] = 2;
+                                re[3] = 0;
+                                re[13] = 0;
+                                re[9] = WaiGuan;
+                                _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan}");
+                            }
                             //RemoveQueue.Enqueue(value);
                             break;
 
@@ -2193,6 +2241,8 @@ namespace SignalForward
                             var destination2 = value.Bytes2.Skip(34).Take(44 - 34).ToArray();
                             timeOut = 0;
                             beforeDt = DateTime.Now;
+                            var isSenndTakePhotoCb2 = false;
+                            var isSenndResultCb2 = true;
                             while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
                             {
                                 //拍照中
@@ -2241,6 +2291,7 @@ namespace SignalForward
                                     Logger?.Info(re);
                                     Logger?.Info("----------------------------------------------------");
                                     photoCompleted = false;
+                                    isSenndTakePhotoCb2 = true;
                                     //Aoi2Message.RemoveAll(item => item.SequenceEqual(b));
                                     Aoi2Message.TryRemove(b.Key, out _);
                                 }
@@ -2288,6 +2339,7 @@ namespace SignalForward
                                     Logger?.Info(re);
                                     Logger?.Info("----------------------------------------------------");
                                     complete = false;
+                                    isSenndResultCb2 = false;
                                     //Aoi2Message.RemoveAll(item => item.SequenceEqual(c));
                                     Aoi2Message.TryRemove(c.Key, out _);
                                 }
@@ -2297,6 +2349,18 @@ namespace SignalForward
                                 var ts = afterDt.Subtract(beforeDt);
                                 timeOut = ts.Ticks / 10000;
                             }
+                            if (isSenndTakePhotoCb2 && isSenndResultCb2)
+                            {
+                                var re = new byte[value.BytesOriginal.Length];
+                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                re[1] = 1;
+                                re[2] = 2;
+                                re[3] = 0;
+                                re[13] = 0;
+                                re[11] = WaiGuan;
+                                _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan}");
+                            }
                             //RemoveQueue.Enqueue(value);
                             break;
 
@@ -2305,6 +2369,10 @@ namespace SignalForward
                             var destination4 = value.Bytes2.Skip(34).Take(44 - 34).ToArray();
                             timeOut = 0;
                             beforeDt = DateTime.Now;
+                            KeyValuePair<byte[], byte[]> ccCb = default;
+                            KeyValuePair<byte[], byte[]> cc1Cb = default;
+                            var isSenndTakePhotoCb3 = false;
+                            var isSenndResultCb3 = true;
                             while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
                             {
                                 byte[] a = default;
@@ -2378,6 +2446,7 @@ namespace SignalForward
                                     Logger?.Info(re);
                                     Logger?.Info("----------------------------------------------------");
                                     photoCompleted = false;
+                                    isSenndTakePhotoCb3 = true;
 
                                     //LockMethod(() =>
                                     //{
@@ -2413,6 +2482,8 @@ namespace SignalForward
 
                                 if (!c.Equals(default(KeyValuePair<byte[], byte[]>)) && !c1.Equals(default(KeyValuePair<byte[], byte[]>)))
                                 {
+                                    ccCb = c;
+                                    cc1Cb = c1;
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
                                     re[1] = 1;
@@ -2460,6 +2531,7 @@ namespace SignalForward
                                     Logger?.Info(re);
                                     Logger?.Info("----------------------------------------------------");
                                     complete = false;
+                                    isSenndResultCb3 = false;
                                     //LockMethod(() => {
                                     //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
                                     Aoi1Message.TryRemove(c.Key, out _);
@@ -2470,9 +2542,33 @@ namespace SignalForward
                                     Aoi2Message.TryRemove(c1.Key, out _);
                                     //});
                                 }
+                                else
+                                {
+                                    if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        ccCb = c;
+                                    }
+                                    if (!c1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        cc1Cb = c1;
+                                    }
+                                }
                                 var afterDt = DateTime.Now;
                                 var ts = afterDt.Subtract(beforeDt);
                                 timeOut = ts.Ticks / 10000;
+                            }
+                            if (isSenndTakePhotoCb3 && isSenndResultCb3)
+                            {
+                                var re = new byte[value.BytesOriginal.Length];
+                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                re[1] = 1;
+                                re[2] = 2;
+                                re[3] = 0;
+                                re[13] = 0;
+                                re[9] = !ccCb.Equals(default(KeyValuePair<byte[], byte[]>)) ? ccCb.Value[12] : WaiGuan;
+                                re[11] = !cc1Cb.Equals(default(KeyValuePair<byte[], byte[]>)) ? cc1Cb.Value[12] : Color;
+                                _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{re[9]},{re[11]}");
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
