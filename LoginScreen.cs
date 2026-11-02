@@ -1,4 +1,4 @@
-﻿namespace SignalForward
+namespace SignalForward
 {
     public partial class LoginScreen : Form
     {
@@ -10,6 +10,7 @@
         public LoginScreen(string password)
         {
             InitializeComponent();
+            LanguageHelper.ApplyLogin(this);
             Password = password;
         }
 
@@ -26,7 +27,7 @@
             }
             else
             {
-                MessageBox.Show("密码错误");
+                MessageBox.Show(LanguageHelper.MsgWrongPassword);
             }
         }
 

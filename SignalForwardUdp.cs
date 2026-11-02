@@ -90,6 +90,8 @@ namespace SignalForward
 
         private static int _timeout = 600;
 
+        private static int _photoTimeout = 300;
+
         private static int _timeout1 = 2;
 
         private byte[] _moRen1 = new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -102,6 +104,11 @@ namespace SignalForward
         public DateTime BeforeTime = default;
 
         public bool IsUse = false;
+
+        /// <summary>
+        /// 连续补发拍照+结果的次数，连续两次则发停机信号
+        /// </summary>
+        private int _consecutiveFullTimeoutCount = 0;
 
         /// <summary>
         /// 外观
@@ -122,6 +129,40 @@ namespace SignalForward
         public int Length1 = 20;
 
         public bool OneTakePhoto = false;
+
+        /// <summary>
+        /// 停机信号下标（AOI结果帧，默认11，与丝网一致）
+        /// </summary>
+        public int StopSignalIndex = 11;
+
+        /// <summary>
+        /// 停机信号值
+        /// </summary>
+        public byte StopSignalValue = 2;
+
+        /// <summary>
+        /// 停机信号写入PLC回帧的下标
+        /// </summary>
+        public int StopSignalPlcIndex = 89;
+
+        /// <summary>
+        /// 读取停机信号；下标越界时返回0
+        /// </summary>
+        private byte GetStopFlag(byte[] data)
+        {
+            return (StopSignalIndex >= 0 && StopSignalIndex < data.Length) ? data[StopSignalIndex] : (byte)0;
+        }
+
+        /// <summary>
+        /// 写入停机信号到PLC回帧；下标越界时忽略
+        /// </summary>
+        private void SetStopFlag(byte[] frame, byte value)
+        {
+            if (StopSignalPlcIndex >= 0 && StopSignalPlcIndex < frame.Length)
+            {
+                frame[StopSignalPlcIndex] = value;
+            }
+        }
 
         #endregion 变量
 
@@ -163,8 +204,18 @@ namespace SignalForward
             Aoi2Port.Enabled = false;
             numericUpDown1.Enabled = false;
             numericUpDown2.Enabled = false;
+            numericUpDown3.Enabled = false;
+            numericUpDown4.Enabled = false;
+            numericUpDown5.Enabled = false;
+            numericUpDown6.Enabled = false;
 
             InitParam();
+            cmbLanguage.SelectedIndex = LanguageHelper.IsEnglish ? 1 : 0;
+            LanguageHelper.ApplyUdp(this);
+            _languageReady = true;
+            numericUpDown4.Value = StopSignalIndex;
+            numericUpDown5.Value = StopSignalValue;
+            numericUpDown6.Value = StopSignalPlcIndex;
             CallOnClick(RemoteBnt);
             CallOnClick(button1);
             CallOnClick(button2);
@@ -682,7 +733,7 @@ namespace SignalForward
                 }
                 else if (CP.Checked == false && CB.Checked == false)
                 {
-                    MessageBox.Show("请选择通讯模式！");
+                    MessageBox.Show(LanguageHelper.MsgSelectMode);
                     return;
                 }
                 else
@@ -705,6 +756,10 @@ namespace SignalForward
                 Aoi2Port.Enabled = false;
                 numericUpDown1.Enabled = false;
                 numericUpDown2.Enabled = false;
+                numericUpDown3.Enabled = false;
+                numericUpDown4.Enabled = false;
+                numericUpDown5.Enabled = false;
+                numericUpDown6.Enabled = false;
                 if (Logger == null) return;
                 button2.Enabled = false;
                 button5.Enabled = true;
@@ -1564,43 +1619,80 @@ namespace SignalForward
                             beforeDt = DateTime.Now;
                             var isSenndTakePhoto1 = false;
                             var isSenndResult1 = true;
+                            var photoTimeouted = false;
+                            var resultTimeouted = false;
 
-                            while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
+                            while (inPhoto || photoCompleted || complete)
                             {
-                                //拍照中
-                                //LockMethod(() =>
-                                //{
-                                //    var a = Aoi1Message.Find(item =>
-                                //        item[2] == 0 && item.Skip(34).Take(44 - 34).ToArray()
-                                //            .SequenceEqual(destination1)
-                                //    );
-
-                                //    if (a != null)
-                                //    {
-                                //        var re = new byte[value.Length];
-                                //        Array.Copy(value, re, value.Length);
-                                //        re[1] = 1;
-                                //        re[2] = 0;
-                                //        re[3] = 0;
-                                //        _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                //        Logger?.Info($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照中O->PLC:");
-                                //        Logger?.Info(re);
-                                //        Logger?.Info("----------------------------------------------------");
-                                //        inPhoto = false;
-                                //        Aoi1Message.RemoveAll(item => item.SequenceEqual(a));
-                                //    }
-                                //});
-
                                 //拍照完成
                                 //LockMethod(() =>
                                 //{
-                                var b = Aoi1Message.Where(item => item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                            .SequenceEqual(destination1)).FirstOrDefault();
-                                //var b = Aoi1Message.Find(item =>
-                                //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination1)
-                                //);
-                                if (!b.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (photoCompleted)
+                                {
+                                    var b = Aoi1Message.Where(item => item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                                .SequenceEqual(destination1)).FirstOrDefault();
+                                    //var b = Aoi1Message.Find(item =>
+                                    //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination1)
+                                    //);
+                                    if (!b.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 1;
+                                        re[3] = 0;
+                                        _remoteUdp?.Send(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
+                                        //Logger?.Info(re);
+                                        //Logger?.Info("----------------------------------------------------");
+                                        photoCompleted = false;
+                                        isSenndTakePhoto1 = true;
+                                        // Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
+                                        Aoi1Message.TryRemove(b.Key, out _);
+                                    }
+                                }
+                                //});
+
+                                //检测完成
+                                //LockMethod(() =>
+                                //{
+                                if (complete)
+                                {
+                                    var c = Aoi1Message.Where(item => item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                          .SequenceEqual(destination1)).FirstOrDefault();
+                                    // var c = Aoi1Message.Find(item =>
+                                    //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination1)
+                                    //);
+                                    if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 2;
+                                        re[3] = 0;
+                                        re[9] = c.Value[9];
+                                        re[10] = c.Value[10];
+                                        SetStopFlag(re, GetStopFlag(c.Value));
+                                        re[90] = c.Value[90];
+                                        _remoteUdp?.Send(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{c.Value[9]},{c.Value[10]}");
+                                        //Logger?.Info(re);
+                                        //Logger?.Info("----------------------------------------------------");
+                                        complete = false;
+                                        isSenndResult1 = false;
+                                        //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
+                                        Aoi1Message.TryRemove(c.Key, out _);
+                                    }
+                                }
+                                //});
+
+                                var afterDt = DateTime.Now;
+                                var ts = afterDt.Subtract(beforeDt);
+                                timeOut = ts.Ticks / 10000;
+
+                                if (photoCompleted && timeOut >= _photoTimeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
@@ -1608,62 +1700,44 @@ namespace SignalForward
                                     re[2] = 1;
                                     re[3] = 0;
                                     _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
-                                    //Logger?.Info(re);
-                                    //Logger?.Info("----------------------------------------------------");
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发拍照完成O->PLC:");
                                     photoCompleted = false;
                                     isSenndTakePhoto1 = true;
-                                    // Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
-                                    Aoi1Message.TryRemove(b.Key, out _);
+                                    photoTimeouted = true;
                                 }
-                                //});
-
-                                //检测完成
-                                //LockMethod(() =>
-                                //{
-                                var c = Aoi1Message.Where(item => item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                      .SequenceEqual(destination1)).FirstOrDefault();
-                                // var c = Aoi1Message.Find(item =>
-                                //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination1)
-                                //);
-                                if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (complete && timeOut >= _timeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
                                     re[1] = 1;
                                     re[2] = 2;
                                     re[3] = 0;
-                                    re[9] = c.Value[9];
-                                    re[10] = c.Value[10];
-                                    re[89] = c.Value[11];
-                                    re[90] = c.Value[90];
+                                    re[9] = WaiGuan;
+                                    re[10] = Color;
                                     _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{c.Value[9]},{c.Value[10]}");
-                                    //Logger?.Info(re);
-                                    //Logger?.Info("----------------------------------------------------");
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
                                     complete = false;
                                     isSenndResult1 = false;
-                                    //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
-                                    Aoi1Message.TryRemove(c.Key, out _);
+                                    resultTimeouted = true;
                                 }
-                                //});
-
-                                var afterDt = DateTime.Now;
-                                var ts = afterDt.Subtract(beforeDt);
-                                timeOut = ts.Ticks / 10000;
                             }
-                            if (isSenndTakePhoto1 && isSenndResult1)
+                            if (photoTimeouted && resultTimeouted)
                             {
-                                var re = new byte[value.BytesOriginal.Length];
-                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                re[1] = 1;
-                                re[2] = 2;
-                                re[3] = 0;
-                                re[9] = WaiGuan;
-                                re[10] = Color;
-                                _remoteUdp?.Send(_plcIpEndPoint, re);
-                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
+                                _consecutiveFullTimeoutCount++;
+                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}补发拍照+结果计数:{_consecutiveFullTimeoutCount}");
+                                if (_consecutiveFullTimeoutCount >= 2)
+                                {
+                                    var stopRe = new byte[value.BytesOriginal.Length];
+                                    Array.Copy(value.BytesOriginal, stopRe, value.BytesOriginal.Length);
+                                    SetStopFlag(stopRe, StopSignalValue);
+                                    _remoteUdp?.Send(_plcIpEndPoint, stopRe);
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}连续两次补发拍照+结果，发送停机信号");
+                                    _consecutiveFullTimeoutCount = 0;
+                                }
+                            }
+                            else
+                            {
+                                _consecutiveFullTimeoutCount = 0;
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
@@ -1674,41 +1748,79 @@ namespace SignalForward
                             beforeDt = DateTime.Now;
                             var isSenndTakePhoto2 = false;
                             var isSenndResult2 = true;
-                            while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
+                            var photoTimeouted2 = false;
+                            var resultTimeouted2 = false;
+                            while (inPhoto || photoCompleted || complete)
                             {
-                                //拍照中
-                                //LockMethod1(() =>
-                                //{
-                                //    var a = Aoi2Message.Find(item =>
-                                //        item[2] == 0 && item.Skip(34).Take(44 - 34).ToArray()
-                                //            .SequenceEqual(destination2)
-                                //    );
-                                //    if (a != null)
-                                //    {
-                                //        var re = new byte[value.Length];
-                                //        Array.Copy(value, re, value.Length);
-                                //        re[1] = 1;
-                                //        re[2] = 0;
-                                //        re[3] = 0;
-                                //        _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                //        Logger?.Info($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照中O->PLC:");
-                                //        Logger?.Info(re);
-                                //        Logger?.Info("----------------------------------------------------");
-                                //        inPhoto = false;
-                                //        Aoi2Message.RemoveAll(item => item.SequenceEqual(a));
-                                //    }
-                                //});
-
                                 //拍照完成
                                 //LockMethod1(() =>
                                 //{
-                                var b = Aoi2Message.Where(item => item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                       .SequenceEqual(destination2)).FirstOrDefault();
-                                //var b = Aoi2Message.Find(item =>
-                                //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination2)
-                                //);
-                                if (!b.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (photoCompleted)
+                                {
+                                    var b = Aoi2Message.Where(item => item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                           .SequenceEqual(destination2)).FirstOrDefault();
+                                    //var b = Aoi2Message.Find(item =>
+                                    //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination2)
+                                    //);
+                                    if (!b.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 1;
+                                        re[3] = 0;
+                                        _remoteUdp?.Send(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
+                                        //Logger?.Info(re);
+                                        //Logger?.Info("----------------------------------------------------");
+                                        photoCompleted = false;
+                                        isSenndTakePhoto2 = true;
+                                        //Aoi2Message.RemoveAll(item => item.SequenceEqual(b));
+                                        Aoi2Message.TryRemove(b.Key, out _);
+                                    }
+                                }
+                                //});
+
+                                //检测完成
+                                //LockMethod1(() =>
+                                //{
+                                if (complete)
+                                {
+                                    var c = Aoi2Message.Where(item => item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                              .SequenceEqual(destination2)).FirstOrDefault();
+                                    //var c = Aoi2Message.Find(item =>
+                                    //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination2)
+                                    //);
+                                    if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 2;
+                                        re[3] = 0;
+                                        re[11] = c.Value[9];
+                                        re[12] = c.Value[10];
+                                        SetStopFlag(re, GetStopFlag(c.Value));
+                                        re[90] = c.Value[90];
+                                        _remoteUdp?.Send(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{c.Value[9]},{c.Value[10]}");
+                                        //Logger?.Info(re); 
+                                        //Logger?.Info("----------------------------------------------------");
+                                        complete = false;
+                                        isSenndResult2 = false;
+                                        //Aoi2Message.RemoveAll(item => item.SequenceEqual(c));
+                                        Aoi2Message.TryRemove(c.Key, out _);
+                                    }
+                                }
+                                //});
+
+                                var afterDt = DateTime.Now;
+                                var ts = afterDt.Subtract(beforeDt);
+                                timeOut = ts.Ticks / 10000;
+
+                                if (photoCompleted && timeOut >= _photoTimeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
@@ -1716,62 +1828,44 @@ namespace SignalForward
                                     re[2] = 1;
                                     re[3] = 0;
                                     _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
-                                    //Logger?.Info(re);
-                                    //Logger?.Info("----------------------------------------------------");
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发拍照完成O->PLC:");
                                     photoCompleted = false;
                                     isSenndTakePhoto2 = true;
-                                    //Aoi2Message.RemoveAll(item => item.SequenceEqual(b));
-                                    Aoi2Message.TryRemove(b.Key, out _);
+                                    photoTimeouted2 = true;
                                 }
-                                //});
-
-                                //检测完成
-                                //LockMethod1(() =>
-                                //{
-                                var c = Aoi2Message.Where(item => item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                          .SequenceEqual(destination2)).FirstOrDefault();
-                                //var c = Aoi2Message.Find(item =>
-                                //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination2)
-                                //);
-                                if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (complete && timeOut >= _timeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
                                     re[1] = 1;
                                     re[2] = 2;
                                     re[3] = 0;
-                                    re[11] = c.Value[9];
-                                    re[12] = c.Value[10];
-                                    re[89] = c.Value[11];
-                                    re[90] = c.Value[90];
+                                    re[11] = WaiGuan;
+                                    re[12] = Color;
                                     _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{c.Value[9]},{c.Value[10]}");
-                                    //Logger?.Info(re); 
-                                    //Logger?.Info("----------------------------------------------------");
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
                                     complete = false;
                                     isSenndResult2 = false;
-                                    //Aoi2Message.RemoveAll(item => item.SequenceEqual(c));
-                                    Aoi2Message.TryRemove(c.Key, out _);
+                                    resultTimeouted2 = true;
                                 }
-                                //});
-
-                                var afterDt = DateTime.Now;
-                                var ts = afterDt.Subtract(beforeDt);
-                                timeOut = ts.Ticks / 10000;
                             }
-                            if (isSenndTakePhoto2 && isSenndResult2)
+                            if (photoTimeouted2 && resultTimeouted2)
                             {
-                                var re = new byte[value.BytesOriginal.Length];
-                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                re[1] = 1;
-                                re[2] = 2;
-                                re[3] = 0;
-                                re[11] = WaiGuan;
-                                re[12] = Color;
-                                _remoteUdp?.Send(_plcIpEndPoint, re);
-                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
+                                _consecutiveFullTimeoutCount++;
+                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}补发拍照+结果计数:{_consecutiveFullTimeoutCount}");
+                                if (_consecutiveFullTimeoutCount >= 2)
+                                {
+                                    var stopRe = new byte[value.BytesOriginal.Length];
+                                    Array.Copy(value.BytesOriginal, stopRe, value.BytesOriginal.Length);
+                                    SetStopFlag(stopRe, StopSignalValue);
+                                    _remoteUdp?.Send(_plcIpEndPoint, stopRe);
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}连续两次补发拍照+结果，发送停机信号");
+                                    _consecutiveFullTimeoutCount = 0;
+                                }
+                            }
+                            else
+                            {
+                                _consecutiveFullTimeoutCount = 0;
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
@@ -1787,7 +1881,9 @@ namespace SignalForward
                             KeyValuePair<byte[], byte[]> cc1 = default;
                             var isSenndTakePhoto = false;
                             var isSenndResult = true;
-                            while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
+                            var photoTimeouted3 = false;
+                            var resultTimeouted3 = false;
+                            while (inPhoto || photoCompleted || complete)
                             {
                                 //byte[] a = default;
                                 //byte[] a1 = default;
@@ -1828,246 +1924,281 @@ namespace SignalForward
                                 //拍照完成
                                 //LockMethod(() =>
                                 //{
-                                bb = Aoi1Message.Where(item =>
-                                item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                   .SequenceEqual(destination3)).FirstOrDefault();
-
-                                //   b = Aoi1Message.Find(item =>
-                                //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination3)
-                                //);
-                                //});
-
-                                //LockMethod1(() =>
-                                //{
-                                bb1 = Aoi2Message.Where(item =>
-                                item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                .SequenceEqual(destination4)).FirstOrDefault();
-
-                                //    b1 = Aoi2Message.Find(item =>
-                                //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination4)
-                                //);
-                                //});
-
-                                if (!bb.Equals(default(KeyValuePair<byte[], byte[]>)) && !bb1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (photoCompleted)
                                 {
-                                    var re = new byte[value.BytesOriginal.Length];
-                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                    re[1] = 1;
-                                    re[2] = 1;
-                                    re[3] = 0;
-                                    _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    isSenndTakePhoto = true;
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
-                                    //Logger?.Info(re);
-                                    //Logger?.Info("----------------------------------------------------");
-                                    photoCompleted = false;
+                                    bb = Aoi1Message.Where(item =>
+                                    item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                       .SequenceEqual(destination3)).FirstOrDefault();
 
-                                    //LockMethod(() => {
-                                    //Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
-                                    Aoi1Message.TryRemove(bb.Key, out _);
+                                    //   b = Aoi1Message.Find(item =>
+                                    //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination3)
+                                    //);
                                     //});
+
                                     //LockMethod1(() =>
                                     //{
-                                    //Aoi2Message.RemoveAll(item => item.SequenceEqual(b1));
-                                    Aoi2Message.TryRemove(bb1.Key, out _);
+                                    bb1 = Aoi2Message.Where(item =>
+                                    item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                    .SequenceEqual(destination4)).FirstOrDefault();
+
+                                    //    b1 = Aoi2Message.Find(item =>
+                                    //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination4)
+                                    //);
                                     //});
+
+                                    if (!bb.Equals(default(KeyValuePair<byte[], byte[]>)) && !bb1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 1;
+                                        re[3] = 0;
+                                        _remoteUdp?.Send(_plcIpEndPoint, re);
+                                        isSenndTakePhoto = true;
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
+                                        //Logger?.Info(re);
+                                        //Logger?.Info("----------------------------------------------------");
+                                        photoCompleted = false;
+
+                                        //LockMethod(() => {
+                                        //Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
+                                        Aoi1Message.TryRemove(bb.Key, out _);
+                                        //});
+                                        //LockMethod1(() =>
+                                        //{
+                                        //Aoi2Message.RemoveAll(item => item.SequenceEqual(b1));
+                                        Aoi2Message.TryRemove(bb1.Key, out _);
+                                        //});
+                                    }
                                 }
 
                                 //检测完成
                                 //LockMethod(() =>
                                 //{
-                                cc = Aoi1Message.Where(item =>
-                             item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                 .SequenceEqual(destination3)
-                               ).FirstOrDefault();
-                                //    c = Aoi1Message.Find(item =>
-                                //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination3)
-                                //);
-                                //});
-
-                                //LockMethod1(() =>
-                                //{
-                                cc1 = Aoi2Message.Where(item =>
-                            item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                .SequenceEqual(destination4)
-                        ).FirstOrDefault();
-                                //    c1 = Aoi2Message.Find(item =>
-                                //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination4)
-                                //);
-                                //});
-
-                                if (!cc.Equals(default(KeyValuePair<byte[], byte[]>)) && !cc1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (complete)
                                 {
-                                    var re = new byte[value.BytesOriginal.Length];
-                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                    re[1] = 1;
-                                    re[2] = 2;
-                                    re[3] = 0;
-                                    switch (value.ty)
+                                    cc = Aoi1Message.Where(item =>
+                                 item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                     .SequenceEqual(destination3)
+                                   ).FirstOrDefault();
+                                    //    c = Aoi1Message.Find(item =>
+                                    //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination3)
+                                    //);
+                                    //});
+
+                                    //LockMethod1(() =>
+                                    //{
+                                    cc1 = Aoi2Message.Where(item =>
+                                item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                    .SequenceEqual(destination4)
+                            ).FirstOrDefault();
+                                    //    c1 = Aoi2Message.Find(item =>
+                                    //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination4)
+                                    //);
+                                    //});
+
+                                    if (!cc.Equals(default(KeyValuePair<byte[], byte[]>)) && !cc1.Equals(default(KeyValuePair<byte[], byte[]>)))
                                     {
-                                        case 1:
-                                            re[9] = cc.Value[9];
-                                            re[10] = cc.Value[10];
-                                            re[89] = cc.Value[11];
-                                            re[90] = cc.Value[90];
-                                            break;
-
-                                        case 2:
-                                            re[11] = cc1.Value[9];
-                                            re[12] = cc1.Value[10];
-                                            re[89] = cc1.Value[11];
-                                            re[90] = cc1.Value[90];
-                                            break;
-
-                                        case 3:
-                                            re[9] = cc.Value[9];
-                                            re[10] = cc.Value[10];
-                                            re[11] = cc1.Value[9];
-                                            re[12] = cc1.Value[10];
-                                            if (cc.Value[11] == 2 || cc1.Value[11] == 2)
-                                            {
-                                                re[89] = 2;
-                                            }
-                                            if (cc.Value[90] > 0)
-                                            {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 2;
+                                        re[3] = 0;
+                                        switch (value.ty)
+                                        {
+                                            case 1:
+                                                re[9] = cc.Value[9];
+                                                re[10] = cc.Value[10];
+                                                SetStopFlag(re, GetStopFlag(cc.Value));
                                                 re[90] = cc.Value[90];
-                                            }
-                                            if (cc1.Value[90] > 0)
-                                            {
+                                                break;
+
+                                            case 2:
+                                                re[11] = cc1.Value[9];
+                                                re[12] = cc1.Value[10];
+                                                SetStopFlag(re, GetStopFlag(cc1.Value));
                                                 re[90] = cc1.Value[90];
-                                            }
-                                            break;
+                                                break;
+
+                                            case 3:
+                                                re[9] = cc.Value[9];
+                                                re[10] = cc.Value[10];
+                                                SetStopFlag(re, GetStopFlag(cc.Value));
+                                                re[11] = cc1.Value[9];
+                                                re[12] = cc1.Value[10];
+                                                if (GetStopFlag(cc.Value) == StopSignalValue || GetStopFlag(cc1.Value) == StopSignalValue)
+                                                {
+                                                    SetStopFlag(re, StopSignalValue);
+                                                }
+                                                if (cc.Value[90] > 0)
+                                                {
+                                                    re[90] = cc.Value[90];
+                                                }
+                                                if (cc1.Value[90] > 0)
+                                                {
+                                                    re[90] = cc1.Value[90];
+                                                }
+                                                break;
+                                        }
+
+                                        _remoteUdp?.Send(_plcIpEndPoint, re);
+                                        isSenndResult = false;
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{cc.Value[9]},{cc.Value[10]},{cc1.Value[9]},{cc1.Value[10]}");
+                                        //Logger?.Info(re);
+                                        //Logger?.Info("----------------------------------------------------");
+                                        complete = false;
+
+                                        //LockMethod(() => {
+                                        //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
+                                        Aoi1Message.TryRemove(cc.Key, out _);
+                                        //});
+                                        //LockMethod1(() => {
+                                        //Aoi2Message.RemoveAll(item => item.SequenceEqual(c1));
+                                        Aoi2Message.TryRemove(cc1.Key, out _);
+                                        //});
                                     }
-
-                                    _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    isSenndResult = false;
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{cc.Value[9]},{cc.Value[10]},{cc1.Value[9]},{cc1.Value[10]}");
-                                    //Logger?.Info(re);
-                                    //Logger?.Info("----------------------------------------------------");
-                                    complete = false;
-
-                                    //LockMethod(() => {
-                                    //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
-                                    Aoi1Message.TryRemove(cc.Key, out _);
-                                    //});
-                                    //LockMethod1(() => {
-                                    //Aoi2Message.RemoveAll(item => item.SequenceEqual(c1));
-                                    Aoi2Message.TryRemove(cc1.Key, out _);
-                                    //});
                                 }
 
                                 var afterDt = DateTime.Now;
                                 var ts = afterDt.Subtract(beforeDt);
                                 timeOut = ts.Ticks / 10000;
+
+                                if (photoCompleted && timeOut >= _photoTimeout)
+                                {
+                                    var rePhoto = new byte[value.BytesOriginal.Length];
+                                    Array.Copy(value.BytesOriginal, rePhoto, value.BytesOriginal.Length);
+                                    rePhoto[1] = 1;
+                                    rePhoto[2] = 1;
+                                    rePhoto[3] = 0;
+                                    _remoteUdp?.Send(_plcIpEndPoint, rePhoto);
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发拍照完成O->PLC:");
+                                    photoCompleted = false;
+                                    isSenndTakePhoto = true;
+                                    photoTimeouted3 = true;
+                                }
+                                if (complete && timeOut >= _timeout)
+                                {
+                                    resultTimeouted3 = true;
+                                    if (!cc.Equals(default(KeyValuePair<byte[], byte[]>)) && cc1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var reR = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, reR, value.BytesOriginal.Length);
+                                        reR[1] = 1;
+                                        reR[2] = 2;
+                                        reR[3] = 0;
+                                        switch (value.ty)
+                                        {
+                                            case 1:
+                                                reR[9] = cc.Value[9];
+                                                reR[10] = cc.Value[10];
+                                                SetStopFlag(reR, GetStopFlag(cc.Value));
+                                                break;
+
+                                            case 2:
+                                                reR[11] = WaiGuan;
+                                                reR[12] = Color;
+                                                break;
+
+                                            case 3:
+                                                reR[9] = cc.Value[9];
+                                                reR[10] = cc.Value[10];
+                                                SetStopFlag(reR, GetStopFlag(cc.Value));
+                                                reR[11] = WaiGuan;
+                                                reR[12] = Color;
+                                                break;
+                                        }
+                                        _remoteUdp?.Send(_plcIpEndPoint, reR);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{cc.Value[9]},{cc.Value[10]},{WaiGuan},{Color}");
+                                        Aoi1Message.TryRemove(cc.Key, out _);
+                                    }
+                                    else if (cc.Equals(default(KeyValuePair<byte[], byte[]>)) && !cc1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var reR = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, reR, value.BytesOriginal.Length);
+                                        reR[1] = 1;
+                                        reR[2] = 2;
+                                        reR[3] = 0;
+                                        switch (value.ty)
+                                        {
+                                            case 1:
+                                                reR[9] = WaiGuan;
+                                                reR[10] = Color;
+                                                break;
+
+                                            case 2:
+                                                reR[11] = cc1.Value[9];
+                                                reR[12] = cc1.Value[10];
+                                                SetStopFlag(reR, GetStopFlag(cc1.Value));
+                                                break;
+
+                                            case 3:
+                                                reR[9] = WaiGuan;
+                                                reR[10] = Color;
+                                                reR[11] = cc1.Value[9];
+                                                reR[12] = cc1.Value[10];
+                                                SetStopFlag(reR, GetStopFlag(cc1.Value));
+                                                break;
+                                        }
+
+                                        _remoteUdp?.Send(_plcIpEndPoint, reR);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{WaiGuan},{Color},{cc1.Value[9]},{cc1.Value[10]}");
+                                        Aoi2Message.TryRemove(cc1.Key, out _);
+                                    }
+                                    else
+                                    {
+                                        var reR = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, reR, value.BytesOriginal.Length);
+                                        reR[1] = 1;
+                                        reR[2] = 2;
+                                        reR[3] = 0;
+                                        switch (value.ty)
+                                        {
+                                            case 1:
+                                                reR[9] = WaiGuan;
+                                                reR[10] = Color;
+                                                break;
+
+                                            case 2:
+                                                reR[11] = WaiGuan;
+                                                reR[12] = Color;
+                                                break;
+
+                                            case 3:
+                                                reR[9] = WaiGuan;
+                                                reR[10] = Color;
+                                                reR[11] = WaiGuan;
+                                                reR[12] = Color;
+                                                break;
+                                        }
+
+                                        _remoteUdp?.Send(_plcIpEndPoint, reR);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{WaiGuan},{Color},{WaiGuan},{Color}");
+                                    }
+                                    complete = false;
+                                    isSenndResult = false;
+                                }
                             }
-                            if (isSenndTakePhoto && isSenndResult)
+                            if (photoTimeouted3 && resultTimeouted3)
                             {
-                                if (!cc.Equals(default(KeyValuePair<byte[], byte[]>)) && cc1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                _consecutiveFullTimeoutCount++;
+                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}补发拍照+结果计数:{_consecutiveFullTimeoutCount}");
+                                if (_consecutiveFullTimeoutCount >= 2)
                                 {
-                                    var re = new byte[value.BytesOriginal.Length];
-                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                    re[1] = 1;
-                                    re[2] = 2;
-                                    re[3] = 0;
-                                    switch (value.ty)
-                                    {
-                                        case 1:
-                                            re[9] = cc.Value[9];
-                                            re[10] = cc.Value[10];
-                                            break;
-
-                                        case 2:
-                                            re[11] = WaiGuan;
-                                            re[12] = Color;
-                                            break;
-
-                                        case 3:
-                                            re[9] = cc.Value[9];
-                                            re[10] = cc.Value[10];
-                                            re[11] = WaiGuan;
-                                            re[12] = Color;
-                                            break;
-                                    }
-                                    _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{cc.Value[9]},{cc.Value[10]},{WaiGuan},{Color}");
-                                    //Logger?.Info(re);
-                                    //Logger?.Info("----------------------------------------------------");
-                                    complete = false;
-
-                                    Aoi1Message.TryRemove(cc.Key, out _);
+                                    var stopRe = new byte[value.BytesOriginal.Length];
+                                    Array.Copy(value.BytesOriginal, stopRe, value.BytesOriginal.Length);
+                                    SetStopFlag(stopRe, StopSignalValue);
+                                    _remoteUdp?.Send(_plcIpEndPoint, stopRe);
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}连续两次补发拍照+结果，发送停机信号");
+                                    _consecutiveFullTimeoutCount = 0;
                                 }
-                                else if (cc.Equals(default(KeyValuePair<byte[], byte[]>)) && !cc1.Equals(default(KeyValuePair<byte[], byte[]>)))
-                                {
-                                    var re = new byte[value.BytesOriginal.Length];
-                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                    re[1] = 1;
-                                    re[2] = 2;
-                                    re[3] = 0;
-                                    switch (value.ty)
-                                    {
-                                        case 1:
-                                            re[9] = WaiGuan;
-                                            re[10] = Color;
-                                            break;
-
-                                        case 2:
-                                            re[11] = cc1.Value[9];
-                                            re[12] = cc1.Value[10];
-                                            break;
-
-                                        case 3:
-                                            re[9] = WaiGuan;
-                                            re[10] = Color;
-                                            re[11] = cc1.Value[9];
-                                            re[12] = cc1.Value[10];
-                                            break;
-                                    }
-
-                                    _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{WaiGuan},{Color},{cc1.Value[9]},{cc1.Value[10]}");
-                                    //Logger?.Info(re);
-                                    //Logger?.Info("----------------------------------------------------");
-                                    complete = false;
-                                    Aoi2Message.TryRemove(cc1.Key, out _);
-                                }
-                                else
-                                {
-                                    var re = new byte[value.BytesOriginal.Length];
-                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                    re[1] = 1;
-                                    re[2] = 2;
-                                    re[3] = 0;
-                                    switch (value.ty)
-                                    {
-                                        case 1:
-                                            re[9] = WaiGuan;
-                                            re[10] = Color;
-                                            break;
-
-                                        case 2:
-                                            re[11] = WaiGuan;
-                                            re[12] = Color;
-                                            break;
-
-                                        case 3:
-                                            re[9] = WaiGuan;
-                                            re[10] = Color;
-                                            re[11] = WaiGuan;
-                                            re[12] = Color;
-                                            break;
-                                    }
-
-                                    _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:{WaiGuan},{Color},{WaiGuan},{Color}");
-                                    //Logger?.Info(re);
-                                    //Logger?.Info("----------------------------------------------------");
-                                    complete = false;
-                                    //Aoi2Message.TryRemove(cc1.Key, out _);
-                                }
+                            }
+                            else
+                            {
+                                _consecutiveFullTimeoutCount = 0;
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
@@ -2120,43 +2251,92 @@ namespace SignalForward
                             beforeDt = DateTime.Now;
                             var isSenndTakePhotoCb1 = false;
                             var isSenndResultCb1 = true;
-                            while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
+                            while (inPhoto || photoCompleted || complete)
                             {
-                                //拍照中
-                                //LockMethod(() =>
-                                //{
-                                //    var a = Aoi1Message.Find(item =>
-                                //        item[2] == 0 && item.Skip(34).Take(44 - 34).ToArray()
-                                //            .SequenceEqual(destination1)
-                                //    );
-                                //    if (a != null)
-                                //    {
-                                //        var re = new byte[value.Length];
-                                //        Array.Copy(value, re, value.Length);
-                                //        re[1] = 1;
-                                //        re[2] = 0;
-                                //        re[3] = 0;
-                                //        _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                //        Logger?.Info($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照中O->PLC:");
-                                //        Logger?.Info(re);
-                                //        Logger?.Info("----------------------------------------------------");
-                                //        inPhoto = false;
-                                //        Aoi1Message.RemoveAll(item => item.SequenceEqual(a));
-                                //    }
-                                //});
-
                                 //拍照完成
                                 //LockMethod(() =>
                                 //{
-                                var b = Aoi1Message.Where(item =>
-                                   item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                       .SequenceEqual(destination1)
-                               ).FirstOrDefault();
-                                //var b = Aoi1Message.Find(item =>
-                                //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination1)
-                                //);
-                                if (!b.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (photoCompleted)
+                                {
+                                    var b = Aoi1Message.Where(item =>
+                                       item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                           .SequenceEqual(destination1)
+                                   ).FirstOrDefault();
+                                    //var b = Aoi1Message.Find(item =>
+                                    //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination1)
+                                    //);
+                                    if (!b.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 1;
+                                        re[3] = 0;
+                                        _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
+                                        Logger?.Info(re);
+                                        Logger?.Info("----------------------------------------------------");
+                                        photoCompleted = false;
+                                        isSenndTakePhotoCb1 = true;
+                                        //Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
+                                        Aoi1Message.TryRemove(b.Key, out _);
+                                    }
+                                }
+                                //});
+
+                                //检测完成
+                                //LockMethod(() =>
+                                //{
+                                if (complete)
+                                {
+                                    var c = Aoi1Message.Where(item =>
+                                        item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                            .SequenceEqual(destination1)
+                                    ).FirstOrDefault();
+                                    //var c = Aoi1Message.Find(item =>
+                                    //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination1)
+                                    //);
+                                    if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 2;
+                                        re[3] = 0;
+
+                                        if (GetStopFlag(c.Value) == StopSignalValue)
+                                        {
+                                            re[13] = 1;
+                                        }
+                                        else
+                                        {
+                                            re[13] = 0;
+                                        }
+                                        //re[9] = c[9];
+                                        re[9] = c.Value[12];
+
+                                        var re2 = re.Take(90);
+                                        var waferData = c.Value.Skip(90).Take(value.BytesOriginal.Length - 90);
+
+                                        _remoteUdp?.SendAsync(_plcIpEndPoint, re2.Concat(waferData).ToArray());
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:");
+                                        Logger?.Info(re);
+                                        Logger?.Info("----------------------------------------------------");
+                                        complete = false;
+                                        isSenndResultCb1 = false;
+                                        //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
+                                        Aoi1Message.TryRemove(c.Key, out _);
+                                    }
+                                }
+                                //});
+
+                                var afterDt = DateTime.Now;
+                                var ts = afterDt.Subtract(beforeDt);
+                                timeOut = ts.Ticks / 10000;
+
+                                if (photoCompleted && timeOut >= _photoTimeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
@@ -2164,75 +2344,24 @@ namespace SignalForward
                                     re[2] = 1;
                                     re[3] = 0;
                                     _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
-                                    Logger?.Info(re);
-                                    Logger?.Info("----------------------------------------------------");
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发拍照完成O->PLC:");
                                     photoCompleted = false;
                                     isSenndTakePhotoCb1 = true;
-                                    //Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
-                                    Aoi1Message.TryRemove(b.Key, out _);
                                 }
-                                //});
-
-                                //检测完成
-                                //LockMethod(() =>
-                                //{
-                                var c = Aoi1Message.Where(item =>
-                                    item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                        .SequenceEqual(destination1)
-                                ).FirstOrDefault();
-                                //var c = Aoi1Message.Find(item =>
-                                //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination1)
-                                //);
-                                if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (complete && timeOut >= _timeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
                                     re[1] = 1;
                                     re[2] = 2;
                                     re[3] = 0;
-
-                                    if (c.Value[11] == 2)
-                                    {
-                                        re[13] = 1;
-                                    }
-                                    else
-                                    {
-                                        re[13] = 0;
-                                    }
-                                    //re[9] = c[9];
-                                    re[9] = c.Value[12];
-
-                                    var re2 = re.Take(90);
-                                    var waferData = c.Value.Skip(90).Take(value.BytesOriginal.Length - 90);
-
-                                    _remoteUdp?.SendAsync(_plcIpEndPoint, re2.Concat(waferData).ToArray());
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:");
-                                    Logger?.Info(re);
-                                    Logger?.Info("----------------------------------------------------");
+                                    re[13] = 0;
+                                    re[9] = WaiGuan;
+                                    _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan}");
                                     complete = false;
                                     isSenndResultCb1 = false;
-                                    //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
-                                    Aoi1Message.TryRemove(c.Key, out _);
                                 }
-                                //});
-
-                                var afterDt = DateTime.Now;
-                                var ts = afterDt.Subtract(beforeDt);
-                                timeOut = ts.Ticks / 10000;
-                            }
-                            if (isSenndTakePhotoCb1 && isSenndResultCb1)
-                            {
-                                var re = new byte[value.BytesOriginal.Length];
-                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                re[1] = 1;
-                                re[2] = 2;
-                                re[3] = 0;
-                                re[13] = 0;
-                                re[9] = WaiGuan;
-                                _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan}");
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
@@ -2243,7 +2372,7 @@ namespace SignalForward
                             beforeDt = DateTime.Now;
                             var isSenndTakePhotoCb2 = false;
                             var isSenndResultCb2 = true;
-                            while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
+                            while (inPhoto || photoCompleted || complete)
                             {
                                 //拍照中
                                 //LockMethod1(() =>
@@ -2271,15 +2400,91 @@ namespace SignalForward
                                 //拍照完成
                                 //LockMethod1(() =>
                                 //{
-                                var b = Aoi2Message.Where(item =>
-                           item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                               .SequenceEqual(destination2)
-                             ).FirstOrDefault();
-                                //    var b = Aoi2Message.Find(item =>
-                                //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
-                                //        .SequenceEqual(destination2)
-                                //);
-                                if (!b.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (photoCompleted)
+                                {
+                                    var b = Aoi2Message.Where(item =>
+                               item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
+                                   .SequenceEqual(destination2)
+                                 ).FirstOrDefault();
+                                    //    var b = Aoi2Message.Find(item =>
+                                    //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
+                                    //        .SequenceEqual(destination2)
+                                    //);
+                                    if (!b.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 1;
+                                        re[3] = 0;
+                                        _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
+                                        Logger?.Info(re);
+                                        Logger?.Info("----------------------------------------------------");
+                                        photoCompleted = false;
+                                        isSenndTakePhotoCb2 = true;
+                                        //Aoi2Message.RemoveAll(item => item.SequenceEqual(b));
+                                        Aoi2Message.TryRemove(b.Key, out _);
+                                    }
+                                }
+                                //});
+
+                                //检测完成
+                                //LockMethod1(() =>
+                                //{
+                                if (complete)
+                                {
+                                    var c = Aoi2Message.Where(item =>
+                                  item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination2)
+                                   ).FirstOrDefault();
+                                    //    var c = Aoi2Message.Find(item =>
+                                    //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination2)
+                                    //);
+                                    if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 2;
+                                        re[3] = 0;
+                                        if (GetStopFlag(c.Value) == StopSignalValue)
+                                        {
+                                            re[13] = 1;
+                                        }
+                                        else
+                                        {
+                                            re[13] = 0;
+                                        }
+                                        re[11] = c.Value[12];
+
+                                        var re2 = re.Take(90).ToArray();
+                                        var waferData = c.Value.Skip(90).Take(value.BytesOriginal.Length - 90).ToArray();
+                                        for (int i = 0; i < waferData.Length - 1; i++)
+                                        {
+                                            if (waferData[i] == 1)
+                                            {
+                                                waferData[i] = 2;
+                                            }
+                                        }
+
+                                        //re[12] = c[11];
+                                        _remoteUdp?.SendAsync(_plcIpEndPoint, re2.Concat(waferData).ToArray());
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:");
+                                        Logger?.Info(re);
+                                        Logger?.Info("----------------------------------------------------");
+                                        complete = false;
+                                        isSenndResultCb2 = false;
+                                        //Aoi2Message.RemoveAll(item => item.SequenceEqual(c));
+                                        Aoi2Message.TryRemove(c.Key, out _);
+                                    }
+                                }
+                                //});
+
+                                var afterDt = DateTime.Now;
+                                var ts = afterDt.Subtract(beforeDt);
+                                timeOut = ts.Ticks / 10000;
+
+                                if (photoCompleted && timeOut >= _photoTimeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
@@ -2287,79 +2492,24 @@ namespace SignalForward
                                     re[2] = 1;
                                     re[3] = 0;
                                     _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
-                                    Logger?.Info(re);
-                                    Logger?.Info("----------------------------------------------------");
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发拍照完成O->PLC:");
                                     photoCompleted = false;
                                     isSenndTakePhotoCb2 = true;
-                                    //Aoi2Message.RemoveAll(item => item.SequenceEqual(b));
-                                    Aoi2Message.TryRemove(b.Key, out _);
                                 }
-                                //});
-
-                                //检测完成
-                                //LockMethod1(() =>
-                                //{
-                                var c = Aoi2Message.Where(item =>
-                              item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination2)
-                               ).FirstOrDefault();
-                                //    var c = Aoi2Message.Find(item =>
-                                //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination2)
-                                //);
-                                if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (complete && timeOut >= _timeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
                                     re[1] = 1;
                                     re[2] = 2;
                                     re[3] = 0;
-                                    if (c.Value[11] == 2)
-                                    {
-                                        re[13] = 1;
-                                    }
-                                    else
-                                    {
-                                        re[13] = 0;
-                                    }
-                                    re[11] = c.Value[12];
-
-                                    var re2 = re.Take(90).ToArray();
-                                    var waferData = c.Value.Skip(90).Take(value.BytesOriginal.Length - 90).ToArray();
-                                    for (int i = 0; i < waferData.Length - 1; i++)
-                                    {
-                                        if (waferData[i] == 1)
-                                        {
-                                            waferData[i] = 2;
-                                        }
-                                    }
-
-                                    //re[12] = c[11];
-                                    _remoteUdp?.SendAsync(_plcIpEndPoint, re2.Concat(waferData).ToArray());
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:");
-                                    Logger?.Info(re);
-                                    Logger?.Info("----------------------------------------------------");
+                                    re[13] = 0;
+                                    re[11] = WaiGuan;
+                                    _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan}");
                                     complete = false;
                                     isSenndResultCb2 = false;
-                                    //Aoi2Message.RemoveAll(item => item.SequenceEqual(c));
-                                    Aoi2Message.TryRemove(c.Key, out _);
                                 }
-                                //});
-
-                                var afterDt = DateTime.Now;
-                                var ts = afterDt.Subtract(beforeDt);
-                                timeOut = ts.Ticks / 10000;
-                            }
-                            if (isSenndTakePhotoCb2 && isSenndResultCb2)
-                            {
-                                var re = new byte[value.BytesOriginal.Length];
-                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                re[1] = 1;
-                                re[2] = 2;
-                                re[3] = 0;
-                                re[13] = 0;
-                                re[11] = WaiGuan;
-                                _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan}");
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
@@ -2373,7 +2523,7 @@ namespace SignalForward
                             KeyValuePair<byte[], byte[]> cc1Cb = default;
                             var isSenndTakePhotoCb3 = false;
                             var isSenndResultCb3 = true;
-                            while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
+                            while (inPhoto || photoCompleted || complete)
                             {
                                 byte[] a = default;
                                 byte[] a1 = default;
@@ -2417,24 +2567,154 @@ namespace SignalForward
                                 //拍照完成
                                 //LockMethod(() =>
                                 //{
-                                b = Aoi1Message.Where(item =>
-                             item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
-                             ).FirstOrDefault();
-                                //     b = Aoi1Message.Find(item =>
-                                //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
-                                //);
-                                //});
-                                //LockMethod1(() =>
-                                //{
-                                b1 = Aoi2Message.Where(item =>
-                               item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
-                             ).FirstOrDefault();
-                                //    b1 = Aoi2Message.Find(item =>
-                                //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
-                                //);
-                                //});
+                                if (photoCompleted)
+                                {
+                                    b = Aoi1Message.Where(item =>
+                                 item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
+                                 ).FirstOrDefault();
+                                    //     b = Aoi1Message.Find(item =>
+                                    //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
+                                    //);
+                                    //});
+                                    //LockMethod1(() =>
+                                    //{
+                                    b1 = Aoi2Message.Where(item =>
+                                   item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
+                                 ).FirstOrDefault();
+                                    //    b1 = Aoi2Message.Find(item =>
+                                    //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
+                                    //);
+                                    //});
 
-                                if (!b.Equals(default(KeyValuePair<byte[], byte[]>)) && !b1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    if (!b.Equals(default(KeyValuePair<byte[], byte[]>)) && !b1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 1;
+                                        re[3] = 0;
+                                        _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
+                                        Logger?.Info(re);
+                                        Logger?.Info("----------------------------------------------------");
+                                        photoCompleted = false;
+                                        isSenndTakePhotoCb3 = true;
+
+                                        //LockMethod(() =>
+                                        //{
+                                        //Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
+                                        Aoi1Message.TryRemove(b.Key, out _);
+                                        //});
+                                        //LockMethod1(() =>
+                                        //{
+                                        //Aoi2Message.RemoveAll(item => item.SequenceEqual(b1));
+                                        Aoi2Message.TryRemove(b1.Key, out _);
+                                        //});
+                                    }
+                                }
+
+                                //检测完成
+                                //LockMethod(() =>
+                                //{
+                                if (complete)
+                                {
+                                    c = Aoi1Message.Where(item =>
+                                    item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
+                                ).FirstOrDefault();
+                                    //    c = Aoi1Message.Find(item =>
+                                    //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
+                                    //);
+                                    //});
+                                    //LockMethod1(() =>
+                                    //{
+                                    c1 = Aoi2Message.Where(item =>
+                                   item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
+                                 ).FirstOrDefault();
+                                    //    c1 = Aoi2Message.Find(item =>
+                                    //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
+                                    //);
+                                    //});
+
+                                    if (!c.Equals(default(KeyValuePair<byte[], byte[]>)) && !c1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    {
+                                        ccCb = c;
+                                        cc1Cb = c1;
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 2;
+                                        re[3] = 0;
+                                        if (GetStopFlag(c.Value) == StopSignalValue || GetStopFlag(c1.Value) == StopSignalValue)
+                                        {
+                                            re[13] = 1;
+                                        }
+                                        else
+                                        {
+                                            re[13] = 0;
+                                        }
+                                        //re[10] = c[10];
+                                        re[11] = c1.Value[12];
+                                        re[9] = c.Value[12];
+
+                                        var re2 = re.Take(90).ToArray();
+                                        var waferData = c.Value.Skip(90).Take(value.BytesOriginal.Length - 90).ToArray();
+                                        var waferData1 = c1.Value.Skip(90).Take(value.BytesOriginal.Length - 90).ToArray();
+                                        for (int i = 0; i < waferData.Length - 1; i++)
+                                        {
+                                            if (waferData[i] == waferData1[i])
+                                            {
+                                                if (waferData[i] == 1)
+                                                {
+                                                    waferData[i] = 3;
+                                                }
+                                            }
+                                            else
+                                            {
+                                                if (waferData[i] - waferData1[i] == 1)
+                                                {
+                                                    waferData[i] = 1;
+                                                }
+                                                else if (waferData[i] - waferData1[i] == -1)
+                                                {
+                                                    waferData[i] = 2;
+                                                }
+                                            }
+                                        }
+
+                                        _remoteUdp?.SendAsync(_plcIpEndPoint, re2.Concat(waferData).ToArray());
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:");
+                                        Logger?.Info(re);
+                                        Logger?.Info("----------------------------------------------------");
+                                        complete = false;
+                                        isSenndResultCb3 = false;
+                                        //LockMethod(() => {
+                                        //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
+                                        Aoi1Message.TryRemove(c.Key, out _);
+                                        //});
+                                        //LockMethod1(() =>
+                                        //{
+                                        //Aoi2Message.RemoveAll(item => item.SequenceEqual(c1));
+                                        Aoi2Message.TryRemove(c1.Key, out _);
+                                        //});
+                                    }
+                                    else
+                                    {
+                                        if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                        {
+                                            ccCb = c;
+                                        }
+                                        if (!c1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                        {
+                                            cc1Cb = c1;
+                                        }
+                                    }
+                                }
+
+                                var afterDt = DateTime.Now;
+                                var ts = afterDt.Subtract(beforeDt);
+                                timeOut = ts.Ticks / 10000;
+
+                                if (photoCompleted && timeOut >= _photoTimeout)
                                 {
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
@@ -2442,133 +2722,25 @@ namespace SignalForward
                                     re[2] = 1;
                                     re[3] = 0;
                                     _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}拍照完成O->PLC:");
-                                    Logger?.Info(re);
-                                    Logger?.Info("----------------------------------------------------");
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发拍照完成O->PLC:");
                                     photoCompleted = false;
                                     isSenndTakePhotoCb3 = true;
-
-                                    //LockMethod(() =>
-                                    //{
-                                    //Aoi1Message.RemoveAll(item => item.SequenceEqual(b));
-                                    Aoi1Message.TryRemove(b.Key, out _);
-                                    //});
-                                    //LockMethod1(() =>
-                                    //{
-                                    //Aoi2Message.RemoveAll(item => item.SequenceEqual(b1));
-                                    Aoi2Message.TryRemove(b1.Key, out _);
-                                    //});
                                 }
-
-                                //检测完成
-                                //LockMethod(() =>
-                                //{
-                                c = Aoi1Message.Where(item =>
-                                item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
-                            ).FirstOrDefault();
-                                //    c = Aoi1Message.Find(item =>
-                                //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
-                                //);
-                                //});
-                                //LockMethod1(() =>
-                                //{
-                                c1 = Aoi2Message.Where(item =>
-                               item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
-                             ).FirstOrDefault();
-                                //    c1 = Aoi2Message.Find(item =>
-                                //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
-                                //);
-                                //});
-
-                                if (!c.Equals(default(KeyValuePair<byte[], byte[]>)) && !c1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                if (complete && timeOut >= _timeout)
                                 {
-                                    ccCb = c;
-                                    cc1Cb = c1;
                                     var re = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
                                     re[1] = 1;
                                     re[2] = 2;
                                     re[3] = 0;
-                                    if (c.Value[11] == 2 || c1.Value[11] == 2)
-                                    {
-                                        re[13] = 1;
-                                    }
-                                    else
-                                    {
-                                        re[13] = 0;
-                                    }
-                                    //re[10] = c[10];
-                                    re[11] = c1.Value[12];
-                                    re[9] = c.Value[12];
-
-                                    var re2 = re.Take(90).ToArray();
-                                    var waferData = c.Value.Skip(90).Take(value.BytesOriginal.Length - 90).ToArray();
-                                    var waferData1 = c1.Value.Skip(90).Take(value.BytesOriginal.Length - 90).ToArray();
-                                    for (int i = 0; i < waferData.Length - 1; i++)
-                                    {
-                                        if (waferData[i] == waferData1[i])
-                                        {
-                                            if (waferData[i] == 1)
-                                            {
-                                                waferData[i] = 3;
-                                            }
-                                        }
-                                        else
-                                        {
-                                            if (waferData[i] - waferData1[i] == 1)
-                                            {
-                                                waferData[i] = 1;
-                                            }
-                                            else if (waferData[i] - waferData1[i] == -1)
-                                            {
-                                                waferData[i] = 2;
-                                            }
-                                        }
-                                    }
-
-                                    _remoteUdp?.SendAsync(_plcIpEndPoint, re2.Concat(waferData).ToArray());
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}发送结果O->PLC:");
-                                    Logger?.Info(re);
-                                    Logger?.Info("----------------------------------------------------");
+                                    re[13] = 0;
+                                    re[9] = !ccCb.Equals(default(KeyValuePair<byte[], byte[]>)) ? ccCb.Value[12] : WaiGuan;
+                                    re[11] = !cc1Cb.Equals(default(KeyValuePair<byte[], byte[]>)) ? cc1Cb.Value[12] : Color;
+                                    _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{re[9]},{re[11]}");
                                     complete = false;
                                     isSenndResultCb3 = false;
-                                    //LockMethod(() => {
-                                    //Aoi1Message.RemoveAll(item => item.SequenceEqual(c));
-                                    Aoi1Message.TryRemove(c.Key, out _);
-                                    //});
-                                    //LockMethod1(() =>
-                                    //{
-                                    //Aoi2Message.RemoveAll(item => item.SequenceEqual(c1));
-                                    Aoi2Message.TryRemove(c1.Key, out _);
-                                    //});
                                 }
-                                else
-                                {
-                                    if (!c.Equals(default(KeyValuePair<byte[], byte[]>)))
-                                    {
-                                        ccCb = c;
-                                    }
-                                    if (!c1.Equals(default(KeyValuePair<byte[], byte[]>)))
-                                    {
-                                        cc1Cb = c1;
-                                    }
-                                }
-                                var afterDt = DateTime.Now;
-                                var ts = afterDt.Subtract(beforeDt);
-                                timeOut = ts.Ticks / 10000;
-                            }
-                            if (isSenndTakePhotoCb3 && isSenndResultCb3)
-                            {
-                                var re = new byte[value.BytesOriginal.Length];
-                                Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                re[1] = 1;
-                                re[2] = 2;
-                                re[3] = 0;
-                                re[13] = 0;
-                                re[9] = !ccCb.Equals(default(KeyValuePair<byte[], byte[]>)) ? ccCb.Value[12] : WaiGuan;
-                                re[11] = !cc1Cb.Equals(default(KeyValuePair<byte[], byte[]>)) ? cc1Cb.Value[12] : Color;
-                                _remoteUdp?.SendAsync(_plcIpEndPoint, re);
-                                Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{re[9]},{re[11]}");
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
@@ -2951,6 +3123,7 @@ namespace SignalForward
             json.Add("CP", CP.Checked);
             json.Add("numericUpDown1", numericUpDown1.Value);
             json.Add("numericUpDown2", numericUpDown2.Value);
+            json.Add("numericUpDown3", numericUpDown3.Value);
             json.Add("PlcIp", PlcIp.Text);
             json.Add("PlcPort", PlcPort.Text);
             json.Add("Plc_oneIp", Plc_oneIp.Text);
@@ -2974,6 +3147,10 @@ namespace SignalForward
             json.Add("StartIndex1", StartIndex1);
             json.Add("Length1", Length1);
             json.Add("OneTakePhoto", OneTakePhoto);
+            json.Add("StopSignalIndex", StopSignalIndex);
+            json.Add("StopSignalValue", StopSignalValue);
+            json.Add("StopSignalPlcIndex", StopSignalPlcIndex);
+            json.Add("IsEnglish", LanguageHelper.IsEnglish);
             if (File.Exists(path))
             {
                 File.Delete(path);
@@ -3009,6 +3186,10 @@ namespace SignalForward
                     }
                     numericUpDown1.Value = jsonNode!["numericUpDown1"]!.GetValue<decimal>();
                     numericUpDown2.Value = jsonNode!["numericUpDown2"]!.GetValue<decimal>();
+                    if (jsonNode["numericUpDown3"] != null)
+                    {
+                        numericUpDown3.Value = jsonNode["numericUpDown3"]!.GetValue<decimal>();
+                    }
                     PlcIp.Text = jsonNode!["PlcIp"]!.GetValue<string>();
                     PlcPort.Text = jsonNode!["PlcPort"]!.GetValue<string>();
                     Plc_oneIp.Text = jsonNode!["Plc_oneIp"]!.GetValue<string>();
@@ -3032,6 +3213,22 @@ namespace SignalForward
                     StartIndex1 = jsonNode!["StartIndex1"]!.GetValue<int>();
                     Length1 = jsonNode!["Length1"]!.GetValue<int>();
                     OneTakePhoto = jsonNode!["OneTakePhoto"]!.GetValue<bool>();
+                    if (jsonNode["StopSignalIndex"] != null)
+                    {
+                        StopSignalIndex = jsonNode["StopSignalIndex"]!.GetValue<int>();
+                    }
+                    if (jsonNode["StopSignalValue"] != null)
+                    {
+                        StopSignalValue = jsonNode["StopSignalValue"]!.GetValue<byte>();
+                    }
+                    if (jsonNode["StopSignalPlcIndex"] != null)
+                    {
+                        StopSignalPlcIndex = jsonNode["StopSignalPlcIndex"]!.GetValue<int>();
+                    }
+                    if (jsonNode["IsEnglish"] != null)
+                    {
+                        LanguageHelper.IsEnglish = jsonNode["IsEnglish"]!.GetValue<bool>();
+                    }
                     return true;
                 }
                 return false;
@@ -3040,6 +3237,24 @@ namespace SignalForward
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 语言已初始化（防止初始化期间触发切换逻辑）
+        /// </summary>
+        private bool _languageReady;
+
+        /// <summary>
+        /// 切换界面语言
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void cmbLanguage_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (!_languageReady) return;
+            LanguageHelper.IsEnglish = cmbLanguage.SelectedIndex == 1;
+            LanguageHelper.ApplyUdp(this);
+            SaveJsonData();
         }
 
         private void CB_CheckedChanged(object sender, EventArgs e)
@@ -3103,6 +3318,11 @@ namespace SignalForward
             _timeout = (int)numericUpDown1.Value;
         }
 
+        private void numericUpDown3_ValueChanged(object sender, EventArgs e)
+        {
+            _photoTimeout = (int)numericUpDown3.Value;
+        }
+
         private void button6_Click(object sender, EventArgs e)
         {
             var login = new LoginScreen(passWord);
@@ -3124,6 +3344,10 @@ namespace SignalForward
                 Aoi2Port.Enabled = true;
                 numericUpDown1.Enabled = true;
                 numericUpDown2.Enabled = true;
+                numericUpDown3.Enabled = true;
+                numericUpDown4.Enabled = true;
+                numericUpDown5.Enabled = true;
+                numericUpDown6.Enabled = true;
             }
             else
             {
@@ -3143,12 +3367,31 @@ namespace SignalForward
                 Aoi2Port.Enabled = false;
                 numericUpDown1.Enabled = false;
                 numericUpDown2.Enabled = false;
+                numericUpDown3.Enabled = false;
+                numericUpDown4.Enabled = false;
+                numericUpDown5.Enabled = false;
+                numericUpDown6.Enabled = false;
             }
         }
 
         private void numericUpDown2_ValueChanged(object sender, EventArgs e)
         {
             _timeout1 = (int)numericUpDown2.Value;
+        }
+
+        private void numericUpDown4_ValueChanged(object sender, EventArgs e)
+        {
+            StopSignalIndex = (int)numericUpDown4.Value;
+        }
+
+        private void numericUpDown5_ValueChanged(object sender, EventArgs e)
+        {
+            StopSignalValue = (byte)numericUpDown5.Value;
+        }
+
+        private void numericUpDown6_ValueChanged(object sender, EventArgs e)
+        {
+            StopSignalPlcIndex = (int)numericUpDown6.Value;
         }
 
         private void SignalForwardUdp_Load(object sender, EventArgs e)

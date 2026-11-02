@@ -1,4 +1,4 @@
-﻿namespace SignalForward
+namespace SignalForward
 {
     partial class LoginScreen
     {
@@ -36,7 +36,7 @@
             // 
             // textBox2
             // 
-            this.textBox2.Location = new System.Drawing.Point(84, 132);
+            this.textBox2.Location = new System.Drawing.Point(100, 132);
             this.textBox2.Name = "textBox2";
             this.textBox2.Size = new System.Drawing.Size(178, 21);
             this.textBox2.TabIndex = 3;
