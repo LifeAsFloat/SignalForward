@@ -3297,6 +3297,16 @@ namespace SignalForward
 
         private void SignalForward_FormClosing(object sender, FormClosingEventArgs e)
         {
+            // 用户主动关闭时需输入修改密码验证
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                using var prompt = new PasswordPrompt(passWord);
+                if (prompt.ShowDialog(this) != DialogResult.OK)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+            }
             if (_tokenSource != null)
             {
                 _tokenSource.Cancel();
