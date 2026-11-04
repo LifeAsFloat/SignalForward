@@ -164,6 +164,129 @@ namespace SignalForward
             }
         }
 
+        /// <summary>
+        /// 缓存帧最长保留时间（毫秒）：请求本身最多等 _timeout，超过该时间的缓存帧不可能再被匹配
+        /// </summary>
+        private const int MessageStaleMs = 30000;
+
+        /// <summary>
+        /// AOI1、AOI2 缓存帧的入表时间，用于清理长期未匹配的残留帧
+        /// </summary>
+        private readonly ConcurrentDictionary<byte[], long> _aoi1Stamp = new();
+
+        private readonly ConcurrentDictionary<byte[], long> _aoi2Stamp = new();
+
+        private long _lastSweepTicks;
+
+        /// <summary>
+        /// 轮询等待：保持原循环条件语义，每次轮询间隔 2ms，避免原实现忙等待占满 CPU 拖慢收包
+        /// </summary>
+        private bool Polling(bool inPhoto, bool photoCompleted, bool complete)
+        {
+            if (!(inPhoto || photoCompleted || complete))
+            {
+                return false;
+            }
+            Thread.Sleep(2);
+            SweepStaleMessagesIfDue();
+            return true;
+        }
+
+        /// <summary>
+        /// 按操作码(1=拍照完成、2=检测完成)与流水号(第34~44字节)查找AOI缓存帧。
+        /// 与原 Where(...).FirstOrDefault() 判断完全等价，但不再为每个元素创建临时数组
+        /// </summary>
+        private static KeyValuePair<byte[], byte[]> FindMessage(ConcurrentDictionary<byte[], byte[]> source, byte operation, byte[] destination)
+        {
+            // 流水号不足 10 字节时原 LINQ 写法（Take(10) 与较短数组比较）必然不匹配，这里保持同样的判定
+            if (destination == null || destination.Length < 10)
+            {
+                return default;
+            }
+            foreach (var item in source)
+            {
+                var key = item.Key;
+                var val = item.Value;
+                if (key == null || key.Length <= 2 || key[2] != operation)
+                {
+                    continue;
+                }
+                if (val == null || val.Length < 44)
+                {
+                    continue;
+                }
+                var matched = true;
+                for (var i = 0; i < 10; i++)
+                {
+                    if (val[34 + i] != destination[i])
+                    {
+                        matched = false;
+                        break;
+                    }
+                }
+                if (matched)
+                {
+                    return item;
+                }
+            }
+            return default;
+        }
+
+        /// <summary>
+        /// AOI 缓存帧入表：内容完全相同的重复帧不再重复登记，避免缓存持续膨胀后匹配变慢
+        /// </summary>
+        private void AddAoiMessage(ConcurrentDictionary<byte[], byte[]> cache, ConcurrentDictionary<byte[], long> stamp, byte[] bytes)
+        {
+            if (bytes == null)
+            {
+                return;
+            }
+            foreach (var item in cache)
+            {
+                if (item.Value != null && item.Value.Length == bytes.Length && item.Value.SequenceEqual(bytes))
+                {
+                    return;
+                }
+            }
+            if (cache.TryAdd(bytes, bytes))
+            {
+                stamp[bytes] = DateTime.UtcNow.Ticks;
+            }
+        }
+
+        /// <summary>
+        /// 每秒最多执行一次残留帧清理
+        /// </summary>
+        private void SweepStaleMessagesIfDue()
+        {
+            var now = DateTime.UtcNow.Ticks;
+            if (now - _lastSweepTicks < TimeSpan.TicksPerSecond)
+            {
+                return;
+            }
+            _lastSweepTicks = now;
+            SweepStaleMessages(Aoi1Message, _aoi1Stamp);
+            SweepStaleMessages(Aoi2Message, _aoi2Stamp);
+        }
+
+        /// <summary>
+        /// 清理超过 MessageStaleMs 仍未匹配的缓存帧
+        /// </summary>
+        private static void SweepStaleMessages(ConcurrentDictionary<byte[], byte[]> cache, ConcurrentDictionary<byte[], long> stamp)
+        {
+            var now = DateTime.UtcNow.Ticks;
+            var limit = TimeSpan.FromMilliseconds(MessageStaleMs).Ticks;
+            foreach (var item in stamp)
+            {
+                if (now - item.Value < limit)
+                {
+                    continue;
+                }
+                cache.TryRemove(item.Key, out _);
+                stamp.TryRemove(item.Key, out _);
+            }
+        }
+
         #endregion 变量
 
         public SignalForwardUdp()
@@ -210,6 +333,11 @@ namespace SignalForward
             numericUpDown6.Enabled = false;
 
             InitParam();
+            // 必须显式同步一次超时参数：控件默认值(结果1000/拍照500)与字段默认值(600/300)不同，
+            // 当配置值恰好等于控件默认值时 ValueChanged 不会触发，之前就会错误地沿用 600/300，
+            // 导致 AOI 明明在界面设定的时间内回复也被判为超时
+            _timeout = (int)numericUpDown1.Value;
+            _photoTimeout = (int)numericUpDown3.Value;
             cmbLanguage.SelectedIndex = LanguageHelper.IsEnglish ? 1 : 0;
             LanguageHelper.ApplyUdp(this);
             _languageReady = true;
@@ -345,15 +473,22 @@ namespace SignalForward
 
         #endregion 同步方式
 
+        /// <summary>
+        /// 流水号随机数（全局共享，避免同一毫秒内多次调用生成相同流水号）
+        /// </summary>
+        private static readonly Random IdRandom = new();
+
+        private static readonly object IdRandomLock = new();
+
         public byte[] GetBytes()
         {
-            // 使用当前时间的毫秒部分作为随机种子
-            int seed = DateTime.Now.Millisecond;
-            Random random = new Random(seed);
-            // 创建一个5位的字节数组
+            // 原实现用“当前毫秒”做随机种子，同一毫秒内多次调用会得到完全相同的流水号，
+            // 导致 AOI 回帧匹配错乱、进而触发超时补发，这里改为全局共享的随机数序列
             byte[] byteArray = new byte[10];
-            // 填充字节数组
-            random.NextBytes(byteArray);
+            lock (IdRandomLock)
+            {
+                IdRandom.NextBytes(byteArray);
+            }
             return byteArray;
         }
 
@@ -676,7 +811,7 @@ namespace SignalForward
                     {
                         Logger?.Info(".....");
                         Logger?.Info(bytes);
-                        Aoi1Message.TryAdd(bytes, bytes);
+                        AddAoiMessage(Aoi1Message, _aoi1Stamp, bytes);
                         Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}添加到AOI1消息列表:");
                     }
 
@@ -858,7 +993,7 @@ namespace SignalForward
                     {
                         Logger?.Info("*****");
                         Logger?.Info(bytes);
-                        Aoi2Message.TryAdd(bytes, bytes);
+                        AddAoiMessage(Aoi2Message, _aoi2Stamp, bytes);
                         Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}添加到AOI2消息列表:");
                     }
                 };
@@ -1588,11 +1723,11 @@ namespace SignalForward
         /// <summary>
         /// 转发AOI发送的消息给PLC
         /// </summary>
-        private void Transmit()
+        private void Transmit(CancellationToken token)
         {
             while (true)
             {
-                _tokenSource1?.Token.ThrowIfCancellationRequested();
+                token.ThrowIfCancellationRequested();
                 try
                 {
                     long timeOut;
@@ -1607,9 +1742,14 @@ namespace SignalForward
                     PendingData value = default;
                     if (RemoteQueue == null || _plcIpEndPoint == null || RemoveQueue == null || _localUdp == null || _localUdp1 == null)
                     {
+                        Thread.Sleep(50);
                         continue;
                     }
-                    RemoteQueue.Dequeue(out value);
+                    RemoteQueue.Dequeue(out value, token);
+                    if (value == null)
+                    {
+                        continue;
+                    }
                     Logger?.Info(value);
                     switch (value.Type)
                     {
@@ -1622,15 +1762,14 @@ namespace SignalForward
                             var photoTimeouted = false;
                             var resultTimeouted = false;
 
-                            while (inPhoto || photoCompleted || complete)
+                            while (Polling(inPhoto, photoCompleted, complete))
                             {
                                 //拍照完成
                                 //LockMethod(() =>
                                 //{
                                 if (photoCompleted)
                                 {
-                                    var b = Aoi1Message.Where(item => item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                                .SequenceEqual(destination1)).FirstOrDefault();
+                                    var b = FindMessage(Aoi1Message, 1, destination1);
                                     //var b = Aoi1Message.Find(item =>
                                     //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination1)
@@ -1659,8 +1798,7 @@ namespace SignalForward
                                 //{
                                 if (complete)
                                 {
-                                    var c = Aoi1Message.Where(item => item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                          .SequenceEqual(destination1)).FirstOrDefault();
+                                    var c = FindMessage(Aoi1Message, 2, destination1);
                                     // var c = Aoi1Message.Find(item =>
                                     //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination1)
@@ -1750,15 +1888,14 @@ namespace SignalForward
                             var isSenndResult2 = true;
                             var photoTimeouted2 = false;
                             var resultTimeouted2 = false;
-                            while (inPhoto || photoCompleted || complete)
+                            while (Polling(inPhoto, photoCompleted, complete))
                             {
                                 //拍照完成
                                 //LockMethod1(() =>
                                 //{
                                 if (photoCompleted)
                                 {
-                                    var b = Aoi2Message.Where(item => item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                           .SequenceEqual(destination2)).FirstOrDefault();
+                                    var b = FindMessage(Aoi2Message, 1, destination2);
                                     //var b = Aoi2Message.Find(item =>
                                     //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination2)
@@ -1787,8 +1924,7 @@ namespace SignalForward
                                 //{
                                 if (complete)
                                 {
-                                    var c = Aoi2Message.Where(item => item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                              .SequenceEqual(destination2)).FirstOrDefault();
+                                    var c = FindMessage(Aoi2Message, 2, destination2);
                                     //var c = Aoi2Message.Find(item =>
                                     //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination2)
@@ -1883,7 +2019,7 @@ namespace SignalForward
                             var isSenndResult = true;
                             var photoTimeouted3 = false;
                             var resultTimeouted3 = false;
-                            while (inPhoto || photoCompleted || complete)
+                            while (Polling(inPhoto, photoCompleted, complete))
                             {
                                 //byte[] a = default;
                                 //byte[] a1 = default;
@@ -1926,9 +2062,7 @@ namespace SignalForward
                                 //{
                                 if (photoCompleted)
                                 {
-                                    bb = Aoi1Message.Where(item =>
-                                    item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                       .SequenceEqual(destination3)).FirstOrDefault();
+                                    bb = FindMessage(Aoi1Message, 1, destination3);
 
                                     //   b = Aoi1Message.Find(item =>
                                     //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
@@ -1938,9 +2072,7 @@ namespace SignalForward
 
                                     //LockMethod1(() =>
                                     //{
-                                    bb1 = Aoi2Message.Where(item =>
-                                    item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                    .SequenceEqual(destination4)).FirstOrDefault();
+                                    bb1 = FindMessage(Aoi2Message, 1, destination4);
 
                                     //    b1 = Aoi2Message.Find(item =>
                                     //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
@@ -1979,10 +2111,7 @@ namespace SignalForward
                                 //{
                                 if (complete)
                                 {
-                                    cc = Aoi1Message.Where(item =>
-                                 item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                     .SequenceEqual(destination3)
-                                   ).FirstOrDefault();
+                                    cc = FindMessage(Aoi1Message, 2, destination3);
                                     //    c = Aoi1Message.Find(item =>
                                     //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination3)
@@ -1991,10 +2120,7 @@ namespace SignalForward
 
                                     //LockMethod1(() =>
                                     //{
-                                    cc1 = Aoi2Message.Where(item =>
-                                item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                    .SequenceEqual(destination4)
-                            ).FirstOrDefault();
+                                    cc1 = FindMessage(Aoi2Message, 2, destination4);
                                     //    c1 = Aoi2Message.Find(item =>
                                     //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination4)
@@ -2209,7 +2335,14 @@ namespace SignalForward
                 }
                 catch (Exception e)
                 {
+                    if (token.IsCancellationRequested)
+                    {
+                        // 模式切换或程序关闭：正常退出，不再记录错误
+                        return;
+                    }
                     Logger?.Error("返回消息给PLC出错:" + e.Message, e);
+                    // 异常时避免立即重试造成空转
+                    Thread.Sleep(10);
                 }
             }
         }
@@ -2221,11 +2354,11 @@ namespace SignalForward
         /// <summary>
         /// 转发AOI发送的消息给PLC
         /// </summary>
-        private void CbTransmit()
+        private void CbTransmit(CancellationToken token)
         {
             while (true)
             {
-                _tokenSource?.Token.ThrowIfCancellationRequested();
+                token.ThrowIfCancellationRequested();
                 try
                 {
                     long timeOut;
@@ -2239,9 +2372,14 @@ namespace SignalForward
                     PendingData value = default;
                     if (RemoteQueue == null || _plcIpEndPoint == null || RemoveQueue == null || _localUdp == null || _localUdp1 == null)
                     {
+                        Thread.Sleep(50);
                         continue;
                     }
-                    RemoteQueue.Dequeue(out value);
+                    RemoteQueue.Dequeue(out value, token);
+                    if (value == null)
+                    {
+                        continue;
+                    }
                     Logger?.Info(value);
                     switch (value.Type)
                     {
@@ -2251,17 +2389,14 @@ namespace SignalForward
                             beforeDt = DateTime.Now;
                             var isSenndTakePhotoCb1 = false;
                             var isSenndResultCb1 = true;
-                            while (inPhoto || photoCompleted || complete)
+                            while (Polling(inPhoto, photoCompleted, complete))
                             {
                                 //拍照完成
                                 //LockMethod(() =>
                                 //{
                                 if (photoCompleted)
                                 {
-                                    var b = Aoi1Message.Where(item =>
-                                       item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                           .SequenceEqual(destination1)
-                                   ).FirstOrDefault();
+                                    var b = FindMessage(Aoi1Message, 1, destination1);
                                     //var b = Aoi1Message.Find(item =>
                                     //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination1)
@@ -2290,10 +2425,7 @@ namespace SignalForward
                                 //{
                                 if (complete)
                                 {
-                                    var c = Aoi1Message.Where(item =>
-                                        item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                            .SequenceEqual(destination1)
-                                    ).FirstOrDefault();
+                                    var c = FindMessage(Aoi1Message, 2, destination1);
                                     //var c = Aoi1Message.Find(item =>
                                     //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination1)
@@ -2372,7 +2504,7 @@ namespace SignalForward
                             beforeDt = DateTime.Now;
                             var isSenndTakePhotoCb2 = false;
                             var isSenndResultCb2 = true;
-                            while (inPhoto || photoCompleted || complete)
+                            while (Polling(inPhoto, photoCompleted, complete))
                             {
                                 //拍照中
                                 //LockMethod1(() =>
@@ -2402,10 +2534,7 @@ namespace SignalForward
                                 //{
                                 if (photoCompleted)
                                 {
-                                    var b = Aoi2Message.Where(item =>
-                               item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray()
-                                   .SequenceEqual(destination2)
-                                 ).FirstOrDefault();
+                                    var b = FindMessage(Aoi2Message, 1, destination2);
                                     //    var b = Aoi2Message.Find(item =>
                                     //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray()
                                     //        .SequenceEqual(destination2)
@@ -2434,9 +2563,7 @@ namespace SignalForward
                                 //{
                                 if (complete)
                                 {
-                                    var c = Aoi2Message.Where(item =>
-                                  item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination2)
-                                   ).FirstOrDefault();
+                                    var c = FindMessage(Aoi2Message, 2, destination2);
                                     //    var c = Aoi2Message.Find(item =>
                                     //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination2)
                                     //);
@@ -2523,7 +2650,7 @@ namespace SignalForward
                             KeyValuePair<byte[], byte[]> cc1Cb = default;
                             var isSenndTakePhotoCb3 = false;
                             var isSenndResultCb3 = true;
-                            while (inPhoto || photoCompleted || complete)
+                            while (Polling(inPhoto, photoCompleted, complete))
                             {
                                 byte[] a = default;
                                 byte[] a1 = default;
@@ -2569,18 +2696,14 @@ namespace SignalForward
                                 //{
                                 if (photoCompleted)
                                 {
-                                    b = Aoi1Message.Where(item =>
-                                 item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
-                                 ).FirstOrDefault();
+                                    b = FindMessage(Aoi1Message, 1, destination3);
                                     //     b = Aoi1Message.Find(item =>
                                     //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
                                     //);
                                     //});
                                     //LockMethod1(() =>
                                     //{
-                                    b1 = Aoi2Message.Where(item =>
-                                   item.Key[2] == 1 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
-                                 ).FirstOrDefault();
+                                    b1 = FindMessage(Aoi2Message, 1, destination4);
                                     //    b1 = Aoi2Message.Find(item =>
                                     //    item[2] == 1 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
                                     //);
@@ -2618,18 +2741,14 @@ namespace SignalForward
                                 //{
                                 if (complete)
                                 {
-                                    c = Aoi1Message.Where(item =>
-                                    item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
-                                ).FirstOrDefault();
+                                    c = FindMessage(Aoi1Message, 2, destination3);
                                     //    c = Aoi1Message.Find(item =>
                                     //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination3)
                                     //);
                                     //});
                                     //LockMethod1(() =>
                                     //{
-                                    c1 = Aoi2Message.Where(item =>
-                                   item.Key[2] == 2 && item.Value.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
-                                 ).FirstOrDefault();
+                                    c1 = FindMessage(Aoi2Message, 2, destination4);
                                     //    c1 = Aoi2Message.Find(item =>
                                     //    item[2] == 2 && item.Skip(34).Take(44 - 34).ToArray().SequenceEqual(destination4)
                                     //);
@@ -2751,7 +2870,14 @@ namespace SignalForward
                 }
                 catch (Exception e)
                 {
+                    if (token.IsCancellationRequested)
+                    {
+                        // 模式切换或程序关闭：正常退出，不再记录错误
+                        return;
+                    }
                     Logger?.Error("返回消息给PLC出错:" + e.Message, e);
+                    // 异常时避免立即重试造成空转
+                    Thread.Sleep(10);
                 }
             }
         }
@@ -3272,7 +3398,8 @@ namespace SignalForward
                 {
                     _tokenSource = new();
                 }
-                Task.Factory.StartNew(CbTransmit, _tokenSource.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                var token = _tokenSource.Token;
+                Task.Factory.StartNew(() => CbTransmit(token), token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
                 CP.Enabled = true;
             }
         }
@@ -3291,7 +3418,8 @@ namespace SignalForward
             {
                 _tokenSource1 = new();
             }
-            Task.Factory.StartNew(Transmit, _tokenSource1.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            var token = _tokenSource1.Token;
+            Task.Factory.StartNew(() => Transmit(token), token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
             CB.Enabled = true;
         }
 

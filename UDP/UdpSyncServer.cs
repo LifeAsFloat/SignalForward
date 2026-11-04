@@ -18,7 +18,12 @@ namespace SignalForward.UDP
 
         private bool _disposed = false;
 
-        public int ReceiveBufferSize { get; set; } = 128;
+        /// <summary>
+        /// 套接字接收缓冲区大小（字节）。
+        /// 原值 128 字节几乎只能容纳一个报文，产线突发多帧时系统缓冲区会溢出导致丢包，
+        /// 表现为 AOI 回帧收不到、随即触发超时补发，这里按常规大小放大
+        /// </summary>
+        public int ReceiveBufferSize { get; set; } = 65536;
 
         /// <summary>
         /// 服务器是否正在运行
@@ -232,8 +237,19 @@ namespace SignalForward.UDP
 
     public class WhCurrentQueue<T>
     {
-        private ConcurrentQueue<T> _queue = new ConcurrentQueue<T>();
-        private readonly SemaphoreSlim semaphore = new SemaphoreSlim(0, 1000);
+        private readonly ConcurrentQueue<T> _queue = new ConcurrentQueue<T>();
+
+        /// <summary>
+        /// 原实现上限为 1000，生产快于消费时 Release 会抛 SemaphoreFullException，
+        /// 异常被上层吞掉后该条待发信号直接丢失，PLC 收不到回复就会判为超时，故不设上限
+        /// </summary>
+        private readonly SemaphoreSlim semaphore = new SemaphoreSlim(0);
+
+        /// <summary>
+        /// 保证入队与信号量增/减保持原子对应
+        /// </summary>
+        private readonly object _sync = new object();
+
         public readonly string Name;
         public ILog Logger;
         public int Count => _queue.Count;
@@ -247,11 +263,17 @@ namespace SignalForward.UDP
         /// <summary>
         /// 队列出队
         /// </summary>
-        /// <param name="obj"></param>
-        public void Dequeue(out T obj)
+        /// <param name="obj">出队的元素</param>
+        /// <param name="token">取消令牌：传入后等待期间可被取消，避免消费线程卡死在信号量上无法退出</param>
+        public void Dequeue(out T obj, CancellationToken token = default)
         {
-            semaphore.Wait();
-            _queue.TryDequeue(out obj);
+            semaphore.Wait(token);
+            if (!_queue.TryDequeue(out obj))
+            {
+                // 队列与信号量短暂不一致时返回空值，由调用方跳过，避免抛异常打断转发线程
+                obj = default!;
+                return;
+            }
             var count = _queue.Count;
             Logger?.Info($"{$"[{Name}]",-10}{"队列出队成功！",-18}剩余 {count}");
         }
@@ -262,9 +284,13 @@ namespace SignalForward.UDP
         /// <param name="obj"></param>
         public void Enqueue(T obj)
         {
-            var count = _queue.Count + 1;
-            _queue.Enqueue(obj);
-            semaphore.Release(1);
+            int count;
+            lock (_sync)
+            {
+                _queue.Enqueue(obj);
+                semaphore.Release(1);
+                count = _queue.Count;
+            }
             Logger?.Info($"{$"[{Name}]",-10}{"队列入队成功！",-18}剩余 {count}");
         }
 
@@ -273,8 +299,15 @@ namespace SignalForward.UDP
         /// </summary>
         public void Clear()
         {
-            while (_queue.TryDequeue(out _))
+            lock (_sync)
             {
+                while (_queue.TryDequeue(out _))
+                {
+                }
+                // 同步清空信号量，否则清空后 Dequeue 仍会被历史信号唤醒并持续取到空值
+                while (semaphore.Wait(0))
+                {
+                }
             }
         }
     }
