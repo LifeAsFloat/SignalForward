@@ -78,14 +78,13 @@ namespace SignalForward
             this.label21 = new System.Windows.Forms.Label();
             this.numericUpDown3 = new System.Windows.Forms.NumericUpDown();
             this.button6 = new System.Windows.Forms.Button();
-            this.label19 = new System.Windows.Forms.Label();
             this.label22 = new System.Windows.Forms.Label();
             this.label23 = new System.Windows.Forms.Label();
             this.label24 = new System.Windows.Forms.Label();
             this.numericUpDown4 = new System.Windows.Forms.NumericUpDown();
             this.numericUpDown5 = new System.Windows.Forms.NumericUpDown();
             this.numericUpDown6 = new System.Windows.Forms.NumericUpDown();
-
+            this.label19 = new System.Windows.Forms.Label();
             this.cmbLanguage = new System.Windows.Forms.ComboBox();
             this.languageLabel = new System.Windows.Forms.Label();
             this.groupBox1.SuspendLayout();
@@ -642,7 +641,7 @@ namespace SignalForward
             this.label21.Location = new System.Drawing.Point(150, 85);
             this.label21.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.label21.Name = "label21";
-            this.label21.Size = new System.Drawing.Size(140, 17);
+            this.label21.Size = new System.Drawing.Size(124, 17);
             this.label21.TabIndex = 14;
             this.label21.Text = "拍照最长等待(毫秒)：";
             // 
@@ -675,47 +674,38 @@ namespace SignalForward
             this.button6.UseVisualStyleBackColor = true;
             this.button6.Click += new System.EventHandler(this.button6_Click);
             // 
-            // label19
-            // 
-            this.label19.AutoSize = true;
-            this.label19.Location = new System.Drawing.Point(13, 639);
-            this.label19.Name = "label19";
-            this.label19.Size = new System.Drawing.Size(40, 17);
-            this.label19.TabIndex = 8;
-            this.label19.Text = "V1.39";
-            //
             // label22
-            //
+            // 
             this.label22.AutoSize = true;
             this.label22.Location = new System.Drawing.Point(150, 113);
             this.label22.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.label22.Name = "label22";
-            this.label22.Size = new System.Drawing.Size(88, 17);
+            this.label22.Size = new System.Drawing.Size(92, 17);
             this.label22.TabIndex = 15;
             this.label22.Text = "停机信号下标：";
-            //
+            // 
             // label23
-            //
+            // 
             this.label23.AutoSize = true;
             this.label23.Location = new System.Drawing.Point(465, 85);
             this.label23.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.label23.Name = "label23";
-            this.label23.Size = new System.Drawing.Size(84, 17);
+            this.label23.Size = new System.Drawing.Size(80, 17);
             this.label23.TabIndex = 16;
             this.label23.Text = "停机信号值：";
-            //
+            // 
             // label24
-            //
+            // 
             this.label24.AutoSize = true;
             this.label24.Location = new System.Drawing.Point(465, 113);
             this.label24.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.label24.Name = "label24";
-            this.label24.Size = new System.Drawing.Size(88, 17);
+            this.label24.Size = new System.Drawing.Size(89, 17);
             this.label24.TabIndex = 19;
             this.label24.Text = "停机PLC下标：";
-            //
+            // 
             // numericUpDown4
-            //
+            // 
             this.numericUpDown4.Location = new System.Drawing.Point(365, 110);
             this.numericUpDown4.Margin = new System.Windows.Forms.Padding(4);
             this.numericUpDown4.Maximum = new decimal(new int[] {
@@ -732,9 +722,9 @@ namespace SignalForward
             0,
             0});
             this.numericUpDown4.ValueChanged += new System.EventHandler(this.numericUpDown4_ValueChanged);
-            //
+            // 
             // numericUpDown5
-            //
+            // 
             this.numericUpDown5.Location = new System.Drawing.Point(635, 82);
             this.numericUpDown5.Margin = new System.Windows.Forms.Padding(4);
             this.numericUpDown5.Maximum = new decimal(new int[] {
@@ -751,9 +741,9 @@ namespace SignalForward
             0,
             0});
             this.numericUpDown5.ValueChanged += new System.EventHandler(this.numericUpDown5_ValueChanged);
-            //
+            // 
             // numericUpDown6
-            //
+            // 
             this.numericUpDown6.Location = new System.Drawing.Point(635, 110);
             this.numericUpDown6.Margin = new System.Windows.Forms.Padding(4);
             this.numericUpDown6.Maximum = new decimal(new int[] {
@@ -770,18 +760,15 @@ namespace SignalForward
             0,
             0});
             this.numericUpDown6.ValueChanged += new System.EventHandler(this.numericUpDown6_ValueChanged);
-            //
-            // SignalForwardUdp
-            //
             // 
-            // languageLabel
+            // label19
             // 
-            this.languageLabel.AutoSize = true;
-            this.languageLabel.Location = new System.Drawing.Point(596, 612);
-            this.languageLabel.Name = "languageLabel";
-            this.languageLabel.Size = new System.Drawing.Size(65, 17);
-            this.languageLabel.TabIndex = 21;
-            this.languageLabel.Text = "语言：";
+            this.label19.AutoSize = true;
+            this.label19.Location = new System.Drawing.Point(13, 639);
+            this.label19.Name = "label19";
+            this.label19.Size = new System.Drawing.Size(40, 17);
+            this.label19.TabIndex = 8;
+            this.label19.Text = "V1.40";
             // 
             // cmbLanguage
             // 
@@ -795,6 +782,18 @@ namespace SignalForward
             this.cmbLanguage.Size = new System.Drawing.Size(110, 25);
             this.cmbLanguage.TabIndex = 22;
             this.cmbLanguage.SelectedIndexChanged += new System.EventHandler(this.cmbLanguage_SelectedIndexChanged);
+            // 
+            // languageLabel
+            // 
+            this.languageLabel.AutoSize = true;
+            this.languageLabel.Location = new System.Drawing.Point(596, 612);
+            this.languageLabel.Name = "languageLabel";
+            this.languageLabel.Size = new System.Drawing.Size(44, 17);
+            this.languageLabel.TabIndex = 21;
+            this.languageLabel.Text = "语言：";
+            // 
+            // SignalForwardUdp
+            // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 17F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(798, 665);
