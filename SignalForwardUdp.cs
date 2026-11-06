@@ -146,6 +146,11 @@ namespace SignalForward
         public int StopSignalPlcIndex = 89;
 
         /// <summary>
+        /// 连续补发"拍照完成+检测结果"达到该次数后发送停机信号（仅在配置文件中设置，默认 2）
+        /// </summary>
+        public int StopAfterConsecutiveTimeouts = 2;
+
+        /// <summary>
         /// 读取停机信号；下标越界时返回0
         /// </summary>
         private byte GetStopFlag(byte[] data)
@@ -1863,7 +1868,7 @@ namespace SignalForward
                             {
                                 _consecutiveFullTimeoutCount++;
                                 Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}补发拍照+结果计数:{_consecutiveFullTimeoutCount}");
-                                if (_consecutiveFullTimeoutCount >= 2)
+                                if (_consecutiveFullTimeoutCount >= StopAfterConsecutiveTimeouts)
                                 {
                                     var stopRe = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, stopRe, value.BytesOriginal.Length);
@@ -1989,7 +1994,7 @@ namespace SignalForward
                             {
                                 _consecutiveFullTimeoutCount++;
                                 Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}补发拍照+结果计数:{_consecutiveFullTimeoutCount}");
-                                if (_consecutiveFullTimeoutCount >= 2)
+                                if (_consecutiveFullTimeoutCount >= StopAfterConsecutiveTimeouts)
                                 {
                                     var stopRe = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, stopRe, value.BytesOriginal.Length);
@@ -2312,7 +2317,7 @@ namespace SignalForward
                             {
                                 _consecutiveFullTimeoutCount++;
                                 Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}补发拍照+结果计数:{_consecutiveFullTimeoutCount}");
-                                if (_consecutiveFullTimeoutCount >= 2)
+                                if (_consecutiveFullTimeoutCount >= StopAfterConsecutiveTimeouts)
                                 {
                                     var stopRe = new byte[value.BytesOriginal.Length];
                                     Array.Copy(value.BytesOriginal, stopRe, value.BytesOriginal.Length);
@@ -3276,6 +3281,7 @@ namespace SignalForward
             json.Add("StopSignalIndex", StopSignalIndex);
             json.Add("StopSignalValue", StopSignalValue);
             json.Add("StopSignalPlcIndex", StopSignalPlcIndex);
+            json.Add("StopAfterConsecutiveTimeouts", StopAfterConsecutiveTimeouts);
             json.Add("IsEnglish", LanguageHelper.IsEnglish);
             if (File.Exists(path))
             {
@@ -3350,6 +3356,11 @@ namespace SignalForward
                     if (jsonNode["StopSignalPlcIndex"] != null)
                     {
                         StopSignalPlcIndex = jsonNode["StopSignalPlcIndex"]!.GetValue<int>();
+                    }
+                    if (jsonNode["StopAfterConsecutiveTimeouts"] != null)
+                    {
+                        // 限定 1~99，避免配置文件写入越界值导致停机判断异常
+                        StopAfterConsecutiveTimeouts = Math.Min(99, Math.Max(1, jsonNode["StopAfterConsecutiveTimeouts"]!.GetValue<int>()));
                     }
                     if (jsonNode["IsEnglish"] != null)
                     {
