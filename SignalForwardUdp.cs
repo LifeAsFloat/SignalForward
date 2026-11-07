@@ -1947,14 +1947,14 @@ namespace SignalForward
 
                                     if (c.Value[11] == 2)
                                     {
-                                        re[9] = 2;
+                                        re[13] = 1;
                                     }
                                     else
                                     {
-                                        re[9] = 1;
+                                        re[13] = 0;
                                     }
                                     //re[9] = c[9];
-                                    re[12] = c.Value[12];
+                                    re[9] = c.Value[12];
 
                                     var re2 = re.Take(90);
                                     var waferData = c.Value.Skip(90).Take(value.BytesOriginal.Length - 90);
@@ -2051,11 +2051,11 @@ namespace SignalForward
                                     re[3] = 0;
                                     if (c.Value[11] == 2)
                                     {
-                                        re[9] = 2;
+                                        re[13] = 1;
                                     }
                                     else
                                     {
-                                        re[9] = 1;
+                                        re[13] = 0;
                                     }
                                     re[11] = c.Value[12];
 
@@ -2207,15 +2207,15 @@ namespace SignalForward
                                     re[3] = 0;
                                     if (c.Value[11] == 2 || c1.Value[11] == 2)
                                     {
-                                        re[9] = 2;
+                                        re[13] = 1;
                                     }
                                     else
                                     {
-                                        re[9] = 1;
+                                        re[13] = 0;
                                     }
-                                    //re[10] = c[10];
+                                    //re[10] = c[10];                            
+                                    re[9] = c.Value[12];
                                     re[11] = c1.Value[12];
-                                    re[12] = c.Value[12];
 
                                     var re2 = re.Take(90).ToArray();
                                     var waferData = c.Value.Skip(90).Take(value.BytesOriginal.Length - 90).ToArray();
