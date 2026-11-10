@@ -151,6 +151,22 @@ namespace SignalForward
         public int StopAfterConsecutiveTimeouts = 2;
 
         /// <summary>
+        /// 可选开关：本次补发后正好达到停机阈值时，不再补发这次结果，只发停机信号
+        /// （仅在配置文件中设置，默认关闭）
+        /// </summary>
+        public bool SkipResultAtStopThreshold = false;
+
+        /// <summary>
+        /// 判断本次结果补发是否应跳过：已启用开关、本次拍照已补发、且再计一次正好达到停机阈值
+        /// </summary>
+        private bool ShouldSkipResultAtStop(bool photoTimeouted)
+        {
+            return SkipResultAtStopThreshold
+                && photoTimeouted
+                && (_consecutiveFullTimeoutCount + 1 >= StopAfterConsecutiveTimeouts);
+        }
+
+        /// <summary>
         /// 读取停机信号；下标越界时返回0
         /// </summary>
         private byte GetStopFlag(byte[] data)
@@ -1850,15 +1866,22 @@ namespace SignalForward
                                 }
                                 if (complete && timeOut >= _timeout)
                                 {
-                                    var re = new byte[value.BytesOriginal.Length];
-                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                    re[1] = 1;
-                                    re[2] = 2;
-                                    re[3] = 0;
-                                    re[9] = WaiGuan;
-                                    re[10] = Color;
-                                    _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
+                                    if (ShouldSkipResultAtStop(photoTimeouted))
+                                    {
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}已达连续超时停机阈值({StopAfterConsecutiveTimeouts})，跳过本次结果补发");
+                                    }
+                                    else
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 2;
+                                        re[3] = 0;
+                                        re[9] = WaiGuan;
+                                        re[10] = Color;
+                                        _remoteUdp?.Send(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
+                                    }
                                     complete = false;
                                     isSenndResult1 = false;
                                     resultTimeouted = true;
@@ -1976,15 +1999,22 @@ namespace SignalForward
                                 }
                                 if (complete && timeOut >= _timeout)
                                 {
-                                    var re = new byte[value.BytesOriginal.Length];
-                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
-                                    re[1] = 1;
-                                    re[2] = 2;
-                                    re[3] = 0;
-                                    re[11] = WaiGuan;
-                                    re[12] = Color;
-                                    _remoteUdp?.Send(_plcIpEndPoint, re);
-                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
+                                    if (ShouldSkipResultAtStop(photoTimeouted2))
+                                    {
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}已达连续超时停机阈值({StopAfterConsecutiveTimeouts})，跳过本次结果补发");
+                                    }
+                                    else
+                                    {
+                                        var re = new byte[value.BytesOriginal.Length];
+                                        Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                        re[1] = 1;
+                                        re[2] = 2;
+                                        re[3] = 0;
+                                        re[11] = WaiGuan;
+                                        re[12] = Color;
+                                        _remoteUdp?.Send(_plcIpEndPoint, re);
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}超时补发结果O->PLC:{WaiGuan},{Color}");
+                                    }
                                     complete = false;
                                     isSenndResult2 = false;
                                     resultTimeouted2 = true;
@@ -2214,7 +2244,11 @@ namespace SignalForward
                                 if (complete && timeOut >= _timeout)
                                 {
                                     resultTimeouted3 = true;
-                                    if (!cc.Equals(default(KeyValuePair<byte[], byte[]>)) && cc1.Equals(default(KeyValuePair<byte[], byte[]>)))
+                                    if (ShouldSkipResultAtStop(photoTimeouted3))
+                                    {
+                                        Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}已达连续超时停机阈值({StopAfterConsecutiveTimeouts})，跳过本次结果补发");
+                                    }
+                                    else if (!cc.Equals(default(KeyValuePair<byte[], byte[]>)) && cc1.Equals(default(KeyValuePair<byte[], byte[]>)))
                                     {
                                         var reR = new byte[value.BytesOriginal.Length];
                                         Array.Copy(value.BytesOriginal, reR, value.BytesOriginal.Length);
@@ -3282,6 +3316,7 @@ namespace SignalForward
             json.Add("StopSignalValue", StopSignalValue);
             json.Add("StopSignalPlcIndex", StopSignalPlcIndex);
             json.Add("StopAfterConsecutiveTimeouts", StopAfterConsecutiveTimeouts);
+            json.Add("SkipResultAtStopThreshold", SkipResultAtStopThreshold);
             json.Add("IsEnglish", LanguageHelper.IsEnglish);
             if (File.Exists(path))
             {
@@ -3361,6 +3396,10 @@ namespace SignalForward
                     {
                         // 限定 1~99，避免配置文件写入越界值导致停机判断异常
                         StopAfterConsecutiveTimeouts = Math.Min(99, Math.Max(1, jsonNode["StopAfterConsecutiveTimeouts"]!.GetValue<int>()));
+                    }
+                    if (jsonNode["SkipResultAtStopThreshold"] != null)
+                    {
+                        SkipResultAtStopThreshold = jsonNode["SkipResultAtStopThreshold"]!.GetValue<bool>();
                     }
                     if (jsonNode["IsEnglish"] != null)
                     {
