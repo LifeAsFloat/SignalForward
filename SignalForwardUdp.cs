@@ -103,6 +103,78 @@ namespace SignalForward
 
         public bool IsUse = false;
 
+        /// <summary>
+        /// 出版模式：双轨有片但只有单轨回信号时，自动补发给自动化；
+        /// 双轨同时没收到信号则不补发（配置文件 CbFillSingleTrackSignal，默认开启）
+        /// </summary>
+        public bool CbFillSingleTrackSignal = true;
+
+        /// <summary>
+        /// AOI 缓存帧的最长保留时间（毫秒）。一条消息最多等 _timeout(默认600ms)，
+        /// 超过该时间仍未匹配的帧不可能再被使用，必须清掉避免缓存无限膨胀
+        /// </summary>
+        private const int MessageStaleMs = 30000;
+
+        /// <summary>
+        /// AOI 缓存帧的入表时间，用于清理残留帧
+        /// </summary>
+        private readonly ConcurrentDictionary<byte[], long> _aoi1Stamp = new();
+
+        private readonly ConcurrentDictionary<byte[], long> _aoi2Stamp = new();
+
+        private long _lastSweepTicks;
+
+        /// <summary>
+        /// AOI 帧入表，同时记录入表时间
+        /// </summary>
+        private void AddAoiMessage(ConcurrentDictionary<byte[], byte[]> cache, ConcurrentDictionary<byte[], long> stamp, byte[] bytes)
+        {
+            if (bytes == null)
+            {
+                return;
+            }
+            if (cache.TryAdd(bytes, bytes))
+            {
+                stamp[bytes] = DateTime.UtcNow.Ticks;
+            }
+            //收到帧时也顺带清理一次（已节流为每秒最多一次），
+            //避免自动化停止发帧而 AOI 仍在发包时残留帧无人清理
+            SweepStaleMessagesIfDue();
+        }
+
+        /// <summary>
+        /// 清理超过 MessageStaleMs 仍未匹配的残留帧
+        /// </summary>
+        private static void SweepStaleMessages(ConcurrentDictionary<byte[], byte[]> cache, ConcurrentDictionary<byte[], long> stamp)
+        {
+            var now = DateTime.UtcNow.Ticks;
+            var limit = TimeSpan.FromMilliseconds(MessageStaleMs).Ticks;
+            foreach (var item in stamp)
+            {
+                if (now - item.Value < limit)
+                {
+                    continue;
+                }
+                cache.TryRemove(item.Key, out _);
+                stamp.TryRemove(item.Key, out _);
+            }
+        }
+
+        /// <summary>
+        /// 最多每秒执行一次残留帧清理
+        /// </summary>
+        private void SweepStaleMessagesIfDue()
+        {
+            var now = DateTime.UtcNow.Ticks;
+            if (now - _lastSweepTicks < TimeSpan.TicksPerSecond)
+            {
+                return;
+            }
+            _lastSweepTicks = now;
+            SweepStaleMessages(Aoi1Message, _aoi1Stamp);
+            SweepStaleMessages(Aoi2Message, _aoi2Stamp);
+        }
+
         #endregion 变量
 
         public SignalForwardUdp()
@@ -314,10 +386,16 @@ namespace SignalForward
 
                             Aoi2Message?.Clear();
 
+                            _aoi1Stamp.Clear();
+
+                            _aoi2Stamp.Clear();
+
                             RemoteQueue?.Clear();
                             Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}清除通讯数据缓存");
                         }
                         BeforeTime = CurTime;
+                        //清理长期未匹配的残留帧，避免缓存无限膨胀
+                        SweepStaleMessagesIfDue();
                         switch (dataBytes[66])
                         {
                             case 1:
@@ -508,7 +586,7 @@ namespace SignalForward
                         case byte[] n when (n[0] == 0 && n[1] == 1 && n[2] == 0):
                             break;
                         default:
-                            Aoi1Message.TryAdd(bytes, bytes);
+                            AddAoiMessage(Aoi1Message, _aoi1Stamp, bytes);
                             Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}添加到AOI1消息列表:");
                             Logger?.Info(bytes);
                             Logger?.Info("----------------------------------------------------");
@@ -621,7 +699,7 @@ namespace SignalForward
                         case byte[] n when (n[0] == 0 && n[1] == 1 && n[2] == 0):
                             break;
                         default:
-                            Aoi2Message.TryAdd(bytes, bytes);
+                            AddAoiMessage(Aoi2Message, _aoi2Stamp, bytes);
                             Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}添加到AOI2消息列表:");
                             Logger?.Info(bytes);
                             Logger?.Info("----------------------------------------------------");
@@ -2092,14 +2170,15 @@ namespace SignalForward
                             var destination4 = value.Bytes2.Skip(34).Take(44 - 34).ToArray();
                             timeOut = 0;
                             beforeDt = DateTime.Now;
+                            {
+                            KeyValuePair<byte[], byte[]> b = default;
+                            KeyValuePair<byte[], byte[]> b1 = default;
+                            KeyValuePair<byte[], byte[]> c = default;
+                            KeyValuePair<byte[], byte[]> c1 = default;
                             while ((inPhoto || photoCompleted || complete) && timeOut < _timeout)
                             {
                                 byte[] a = default;
                                 byte[] a1 = default;
-                                KeyValuePair<byte[], byte[]> b = default;
-                                KeyValuePair<byte[], byte[]> b1 = default;
-                                KeyValuePair<byte[], byte[]> c = default;
-                                KeyValuePair<byte[], byte[]> c1 = default;
 
                                 //拍照中
                                 //LockMethod(() =>
@@ -2260,6 +2339,64 @@ namespace SignalForward
                                 var afterDt = DateTime.Now;
                                 var ts = afterDt.Subtract(beforeDt);
                                 timeOut = ts.Ticks / 10000;
+                            }
+                            //双轨有片但只有单轨回信号时，自动补发给自动化；双轨都没收到则不补发
+                            if (CbFillSingleTrackSignal)
+                            {
+                                var bArrived = !b.Equals(default(KeyValuePair<byte[], byte[]>));
+                                var b1Arrived = !b1.Equals(default(KeyValuePair<byte[], byte[]>));
+                                var cArrived = !c.Equals(default(KeyValuePair<byte[], byte[]>));
+                                var c1Arrived = !c1.Equals(default(KeyValuePair<byte[], byte[]>));
+
+                                //拍照完成：只有一路到达
+                                if (photoCompleted && (bArrived ^ b1Arrived))
+                                {
+                                    var re = new byte[value.BytesOriginal.Length];
+                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                    re[1] = 1;
+                                    re[2] = 1;
+                                    re[3] = 0;
+                                    _remoteUdp?.SendAsync(_plcIpEndPoint, re);
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}单轨补发拍照完成O->PLC:{(bArrived ? "AOI1" : "AOI2")}已回");
+                                    Logger?.Info(re);
+                                    Logger?.Info("----------------------------------------------------");
+                                    photoCompleted = false;
+                                    if (bArrived) Aoi1Message.TryRemove(b.Key, out _);
+                                    if (b1Arrived) Aoi2Message.TryRemove(b1.Key, out _);
+                                }
+
+                                //检测完成：只有一路到达，缺失那路沿用已到那路的结果与晶圆数据
+                                if (complete && (cArrived ^ c1Arrived))
+                                {
+                                    var arrived = cArrived ? c : c1;
+                                    var re = new byte[value.BytesOriginal.Length];
+                                    Array.Copy(value.BytesOriginal, re, value.BytesOriginal.Length);
+                                    re[1] = 1;
+                                    re[2] = 2;
+                                    re[3] = 0;
+                                    if (arrived.Value[11] == 2)
+                                    {
+                                        re[13] = 1;
+                                    }
+                                    else
+                                    {
+                                        re[13] = 0;
+                                    }
+                                    re[9] = arrived.Value[12];
+                                    re[11] = arrived.Value[12];
+
+                                    var re2 = re.Take(90).ToArray();
+                                    var waferData = arrived.Value.Skip(90).Take(value.BytesOriginal.Length - 90).ToArray();
+
+                                    _remoteUdp?.SendAsync(_plcIpEndPoint, re2.Concat(waferData).ToArray());
+                                    Logger?.Info($"{label19.Text}-{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}单轨补发结果O->PLC:{(cArrived ? "AOI1" : "AOI2")}已回,结果{arrived.Value[12]}");
+                                    Logger?.Info(re);
+                                    Logger?.Info("----------------------------------------------------");
+                                    complete = false;
+                                    if (cArrived) Aoi1Message.TryRemove(c.Key, out _);
+                                    if (c1Arrived) Aoi2Message.TryRemove(c1.Key, out _);
+                                }
+                            }
                             }
                             //RemoveQueue.Enqueue(value);
                             break;
@@ -2658,6 +2795,7 @@ namespace SignalForward
             json.Add("Aoi2Port", Aoi2Port.Text);
             json.Add("PassWord", passWord);
             json.Add("IsUse", IsUse);
+            json.Add("CbFillSingleTrackSignal", CbFillSingleTrackSignal);
             if (File.Exists(path))
             {
                 File.Delete(path);
@@ -2709,6 +2847,10 @@ namespace SignalForward
                     Aoi2Port.Text = jsonNode!["Aoi2Port"]!.GetValue<string>();
                     passWord = jsonNode!["PassWord"]!.GetValue<string>();
                     IsUse = jsonNode!["IsUse"]!.GetValue<bool>();
+                    if (jsonNode["CbFillSingleTrackSignal"] != null)
+                    {
+                        CbFillSingleTrackSignal = jsonNode["CbFillSingleTrackSignal"]!.GetValue<bool>();
+                    }
                     return true;
                 }
                 return false;
